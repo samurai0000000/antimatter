@@ -29,16 +29,20 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.net.Proxy
 import java.util.concurrent.TimeUnit
 import kotlin.math.pow
 
 class BridgeWebSocket(private val context: Context) {
     private val client = OkHttpClient.Builder()
+        .proxy(Proxy.NO_PROXY)
         .readTimeout(0, TimeUnit.MILLISECONDS) // Disable timeout for websocket
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
@@ -117,10 +121,80 @@ class BridgeWebSocket(private val context: Context) {
         updateConnectionState(ConnectionState.DISCONNECTED)
     }
 
+    private fun isHttpMode(): Boolean {
+        val url = currentUrl ?: return false
+        return url.startsWith("http://") || url.startsWith("https://")
+    }
+
     private fun connectInternal() {
         if (isConnecting.get() || currentUrl == null || manuallyDisconnected) return
         isConnecting.set(true)
         updateConnectionState(ConnectionState.CONNECTING)
+
+        val targetUrl = currentUrl!!
+
+        if (isHttpMode()) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val requestBuilder = Request.Builder()
+                        .url("$targetUrl/api/agent/available")
+                        .header("User-Agent", "aimon-mobile/1.0")
+                        .get()
+
+                    if (token != null) {
+                        requestBuilder.header("X-Mobile-Token", token!!)
+                        requestBuilder.header("Authorization", "Bearer $token")
+                    }
+
+                    val resp = client.newCall(requestBuilder.build()).execute()
+                    val body = resp.body?.string() ?: ""
+
+                    if (resp.isSuccessful) {
+                        Log.d("BridgeWebSocket", "HTTP Bridge connected to $targetUrl")
+                        isConnecting.set(false)
+                        reconnectAttempt = 0
+                        updateConnectionState(ConnectionState.CONNECTED)
+
+                        val agentsMsg = gson.fromJson(body, InboundMessage.AvailableAgents::class.java)
+                        _messages.emit(agentsMsg)
+
+                        // Also fetch history
+                        try {
+                            val histReq = Request.Builder()
+                                .url("$targetUrl/api/agent/history")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val histResp = client.newCall(histReq).execute()
+                            val histBody = histResp.body?.string() ?: ""
+                            if (histResp.isSuccessful) {
+                                val histMsg = gson.fromJson(histBody, InboundMessage.HistoryList::class.java)
+                                _messages.emit(histMsg)
+                            }
+                        } catch (e: Exception) {
+                            Log.w("BridgeWebSocket", "Failed to fetch initial history", e)
+                        }
+                    } else {
+                        Log.e("BridgeWebSocket", "HTTP Bridge connection failed with code: ${resp.code}")
+                        isConnecting.set(false)
+                        updateConnectionState(ConnectionState.DISCONNECTED)
+                        scheduleReconnect()
+                    }
+                } catch (e: Exception) {
+                    Log.e("BridgeWebSocket", "HTTP Bridge connection exception", e)
+                    isConnecting.set(false)
+                    updateConnectionState(ConnectionState.DISCONNECTED)
+                    scheduleReconnect()
+                }
+            }
+            return
+        }
 
         try {
             val requestBuilder = Request.Builder()
@@ -247,7 +321,7 @@ class BridgeWebSocket(private val context: Context) {
                                             e2ee.deriveSessionKeys(message.pubkey)
                                             e2eeSession = e2ee
                                             
-                                            val helloMsg = OutboundMessage.Hello(e2ee.publicKeyBase64)
+                                             val helloMsg = OutboundMessage.Hello(e2ee.publicKeyBase64)
                                             webSocket.send(gson.toJson(helloMsg))
                                             Log.d("BridgeWebSocket", "Sent HELLO X25519 payload. E2EE Established.")
                                             
@@ -336,6 +410,304 @@ class BridgeWebSocket(private val context: Context) {
     }
 
     fun sendMessage(message: OutboundMessage) {
+        if (isHttpMode()) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val url = currentUrl ?: return@launch
+                    when (message) {
+                        is OutboundMessage.SendMessage -> {
+                            val reqBody = gson.toJson(mapOf(
+                                "text" to message.text,
+                                "agentId" to (message.agentId ?: "antigravity"),
+                                "images" to (message.images ?: emptyList<String>())
+                            ))
+                            val req = Request.Builder()
+                                .url("$url/api/agent/prompt")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .post(reqBody.toRequestBody("application/json".toMediaType()))
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                _messages.emit(InboundMessage.Ack(message.id ?: ""))
+
+                                try {
+                                    val json = JsonParser.parseString(body).asJsonObject
+                                    val cid = if (json.has("conversationId")) json.get("conversationId").asString else ""
+                                    if (json.has("steps")) {
+                                        val arr = json.getAsJsonArray("steps")
+                                        arr.forEach { elem ->
+                                            val stepObj = elem.asJsonObject
+                                            val caseType = if (stepObj.has("case")) stepObj.get("case").asString else "text"
+                                            val value = if (stepObj.has("value")) stepObj.get("value").asString else ""
+                                            val tool = if (stepObj.has("tool")) stepObj.get("tool").asString else null
+                                            val cmd = if (stepObj.has("command")) stepObj.get("command").asString else null
+                                            _messages.emit(InboundMessage.Step(
+                                                step = TrajectoryStep(case = caseType, value = value, tool = tool, command = cmd),
+                                                index = -1,
+                                                agentId = message.agentId ?: "antigravity"
+                                            ))
+                                        }
+                                    } else if (json.has("response")) {
+                                        val respText = json.get("response").asString
+                                        _messages.emit(InboundMessage.Step(
+                                            step = TrajectoryStep(case = "text", value = respText),
+                                            index = -1,
+                                            agentId = message.agentId ?: "antigravity"
+                                        ))
+                                    } else {
+                                        _messages.emit(InboundMessage.Step(
+                                            step = TrajectoryStep(case = "text", value = "Received: ${message.text}"),
+                                            index = -1,
+                                            agentId = message.agentId ?: "antigravity"
+                                        ))
+                                    }
+                                    // Complete response and clear isGenerating
+                                    _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                } catch (e: Exception) {
+                                    Log.e("BridgeWebSocket", "Error parsing prompt response", e)
+                                    _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId ?: "antigravity"))
+                                }
+
+                                // Refresh history list
+                                try {
+                                    val histReq = Request.Builder()
+                                        .url("$url/api/agent/history")
+                                        .header("User-Agent", "aimon-mobile/1.0")
+                                        .apply {
+                                            if (token != null) {
+                                                header("X-Mobile-Token", token!!)
+                                                header("Authorization", "Bearer $token")
+                                            }
+                                        }
+                                        .get()
+                                        .build()
+                                    val histResp = client.newCall(histReq).execute()
+                                    val histBody = histResp.body?.string() ?: ""
+                                    if (histResp.isSuccessful) {
+                                        val histMsg = gson.fromJson(histBody, InboundMessage.HistoryList::class.java)
+                                        _messages.emit(histMsg)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w("BridgeWebSocket", "Failed to refresh history after send", e)
+                                }
+                            } else {
+                                _messages.emit(InboundMessage.Error("Failed to send prompt: HTTP ${resp.code}"))
+                                _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId))
+                            }
+                        }
+                        is OutboundMessage.ListAgents -> {
+                            val req = Request.Builder()
+                                .url("$url/api/agent/available")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                val agentsMsg = gson.fromJson(body, InboundMessage.AvailableAgents::class.java)
+                                _messages.emit(agentsMsg)
+                            }
+                        }
+                        is OutboundMessage.GetHistory -> {
+                            val req = Request.Builder()
+                                .url("$url/api/agent/history")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                val histMsg = gson.fromJson(body, InboundMessage.HistoryList::class.java)
+                                _messages.emit(histMsg)
+                            }
+                        }
+                        is OutboundMessage.SubscribeConversation -> {
+                            val req = Request.Builder()
+                                .url("$url/api/agent/transcript?id=${message.conversationId}")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                val json = JsonParser.parseString(body).asJsonObject
+                                val cid = if (json.has("conversationId")) json.get("conversationId").asString else message.conversationId
+                                val model = if (json.has("model")) json.get("model").asString else "gemini-2.5-pro"
+                                val stepCount = if (json.has("stepCount")) json.get("stepCount").asInt else 0
+                                val steps = if (json.has("steps")) {
+                                    val arr = json.getAsJsonArray("steps")
+                                    arr.map { elem ->
+                                        gson.fromJson(elem, InboundMessage.Step::class.java)
+                                    }
+                                } else emptyList()
+
+                                _messages.emit(InboundMessage.SessionState(
+                                    conversationId = cid,
+                                    model = model,
+                                    stepCount = stepCount,
+                                    agentId = message.agentId
+                                ))
+                                _messages.emit(InboundMessage.StepBatch(
+                                    steps = steps,
+                                    agentId = message.agentId,
+                                    conversationId = cid
+                                ))
+                            }
+                        }
+                        is OutboundMessage.GetArtifacts -> {
+                            val req = Request.Builder()
+                                .url("$url/api/agent/artifacts?id=${message.conversationId}")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                val artifactsMsg = gson.fromJson(body, InboundMessage.ArtifactsList::class.java)
+                                _messages.emit(artifactsMsg)
+                            }
+                        }
+                        is OutboundMessage.ReadArtifact -> {
+                            val req = Request.Builder()
+                                .url("$url/api/workspace/file?path=${message.path}")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                val json = JsonParser.parseString(body).asJsonObject
+                                val content = if (json.has("content")) json.get("content").asString else ""
+                                val lang = if (json.has("language")) json.get("language").asString else ""
+                                _messages.emit(InboundMessage.ArtifactContent(
+                                    path = message.path,
+                                    content = content,
+                                    language = lang,
+                                    agentId = message.agentId
+                                ))
+                            }
+                        }
+                        is OutboundMessage.GetFiles -> {
+                            val req = Request.Builder()
+                                .url("$url/api/workspace/tree")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                val treeMsg = gson.fromJson(body, InboundMessage.FileTree::class.java)
+                                _messages.emit(treeMsg)
+                            }
+                        }
+                        is OutboundMessage.ReadFile -> {
+                            val req = Request.Builder()
+                                .url("$url/api/workspace/file?path=${message.path}")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .get()
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            val body = resp.body?.string() ?: ""
+                            if (resp.isSuccessful) {
+                                val fileMsg = gson.fromJson(body, InboundMessage.FileContent::class.java)
+                                _messages.emit(fileMsg)
+                            }
+                        }
+                        is OutboundMessage.WriteFile -> {
+                            val reqBody = gson.toJson(mapOf(
+                                "path" to message.path,
+                                "content" to message.content
+                            ))
+                            val req = Request.Builder()
+                                .url("$url/api/workspace/file")
+                                .header("User-Agent", "aimon-mobile/1.0")
+                                .apply {
+                                    if (token != null) {
+                                        header("X-Mobile-Token", token!!)
+                                        header("Authorization", "Bearer $token")
+                                    }
+                                }
+                                .post(reqBody.toRequestBody("application/json".toMediaType()))
+                                .build()
+                            val resp = client.newCall(req).execute()
+                            if (resp.isSuccessful) {
+                                _messages.emit(InboundMessage.Ack(message.id ?: ""))
+                            }
+                        }
+                        is OutboundMessage.NewConversation -> {
+                            val newCid = UUID.randomUUID().toString()
+                            _messages.emit(InboundMessage.SessionState(
+                                conversationId = newCid,
+                                model = "gemini-2.5-pro",
+                                stepCount = 0,
+                                agentId = message.agentId
+                            ))
+                            _messages.emit(InboundMessage.Ack(message.id ?: ""))
+                        }
+                        is OutboundMessage.CancelResponse -> {
+                            _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId))
+                        }
+                        else -> {
+                            _messages.emit(InboundMessage.Ack(message.id ?: ""))
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("BridgeWebSocket", "HTTP REST Error for message: $message", e)
+                    _messages.emit(InboundMessage.Error(e.message ?: "Network error"))
+                }
+            }
+            return
+        }
+
         val json = gson.toJson(message)
         val payload = if (e2eeSession != null && message !is OutboundMessage.AuthChallenge && message !is OutboundMessage.Hello) {
             val env = e2eeSession!!.encrypt(json, "cmd:")

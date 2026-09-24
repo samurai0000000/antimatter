@@ -29,17 +29,11 @@ private val DarkColorScheme = darkColorScheme(
 
 @Composable
 fun AntimatterTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    darkTheme: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S -> {
-            val context = androidx.compose.ui.platform.LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        else -> DarkColorScheme // Force dark theme for now
-    }
+    val colorScheme = DarkColorScheme
     
     val view = LocalView.current
     if (!view.isInEditMode) {

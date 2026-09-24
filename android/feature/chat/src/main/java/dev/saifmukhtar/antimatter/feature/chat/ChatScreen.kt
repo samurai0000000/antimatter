@@ -268,20 +268,49 @@ fun ChatScreen(
                 var expanded by remember { mutableStateOf(false) }
                 TopAppBar(
                     title = {
-                        Box {
-                            Row(
-                                modifier = Modifier
-                                    .clickable { expanded = true }
-                                    .padding(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            val currentAgent = uiState.availableAgents.find { it.id == uiState.activeAgentId }
+                            Surface(
+                                onClick = { expanded = true },
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                modifier = Modifier.padding(vertical = 4.dp)
                             ) {
-                                val currentAgent = uiState.availableAgents.find { it.id == uiState.activeAgentId }
-                                Text(
-                                    text = currentAgent?.name ?: "Select Agent",
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Icon(Icons.Default.ArrowDownward, contentDescription = "Switch Agent", modifier = Modifier.size(16.dp))
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Agent selector",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = currentAgent?.name ?: "Google Antigravity",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .background(
+                                                    color = androidx.compose.ui.graphics.Color(0xFF10B981),
+                                                    shape = androidx.compose.foundation.shape.CircleShape
+                                                )
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowDownward,
+                                            contentDescription = "Switch Agent",
+                                            modifier = Modifier.size(14.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
                             }
                             DropdownMenu(
                                 expanded = expanded,
@@ -325,29 +354,15 @@ fun ChatScreen(
                             Icon(Icons.AutoMirrored.Filled.Article, contentDescription = "Artifacts")
                         }
                         IconButton(onClick = onNewConversation) {
-                        Icon(Icons.Default.Add, contentDescription = "New Chat")
-                    }
-                    val icon = if (uiState.connectionState == BridgeWebSocket.ConnectionState.CONNECTED) {
-                        Icons.Default.Wifi
-                    } else {
-                        Icons.Default.WifiOff
-                    }
-                    val tint = if (uiState.connectionState == BridgeWebSocket.ConnectionState.CONNECTED) {
-                        MaterialTheme.colorScheme.secondary
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    }
-                    Icon(icon, contentDescription = "Connection", tint = tint, modifier = Modifier.padding(end = 16.dp))
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
+                            Icon(Icons.Default.Add, contentDescription = "New Chat")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
+                    )
                 )
-            )
-        },
-        bottomBar = {
-            val currentAgent = uiState.availableAgents.find { it.id == uiState.activeAgentId }
-            val isOnline = currentAgent?.status == "online" && uiState.connectionState == BridgeWebSocket.ConnectionState.CONNECTED
-            if (isOnline) {
+            },
+            bottomBar = {
                 MessageInput(
                     isGenerating = uiState.isGenerating,
                     onSend = onSendPrompt,
@@ -355,22 +370,7 @@ fun ChatScreen(
                     selectedImageUri = uiState.selectedImageUri,
                     onSelectImage = onSelectImage
                 )
-            } else {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    shape = MaterialTheme.shapes.medium
-                ) {
-                    Text(
-                        text = if (uiState.activeAgentId == null) "Please select an agent from the top dropdown." else "Agent is offline. Input disabled.",
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                }
             }
-        }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -437,10 +437,10 @@ fun ChatScreen(
                     val reversedItems = groupedItems.reversed()
                     itemsIndexed(
                         items = reversedItems,
-                        key = { _, item ->
+                        key = { index, item ->
                             when (item) {
-                                is ChatItem.SingleStep -> "step_${item.originalIndex}"
-                                is ChatItem.ThoughtGroup -> "thought_group_${item.originalIndex}"
+                                is ChatItem.SingleStep -> "step_${item.originalIndex}_${index}_${item.step.displayText.hashCode()}"
+                                is ChatItem.ThoughtGroup -> "thought_group_${item.originalIndex}_${index}"
                             }
                         }
                     ) { _, item ->

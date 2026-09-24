@@ -48,12 +48,10 @@ fun FilesScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // ── Left: screen title ─────────────────────────────────
-                        Text("Workspace", fontWeight = FontWeight.Bold)
+                        Text("Workspace", fontWeight = FontWeight.Bold, color = Color.White)
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        // ── Center-right: workspace switcher chip ──────────────
                         Box {
                             Surface(
                                 onClick = {
@@ -62,41 +60,36 @@ fun FilesScreen(
                                     }
                                 },
                                 shape = RoundedCornerShape(20.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                color = Color(0xFF1E3A40),
                                 modifier = Modifier.height(36.dp)
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 14.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Folder,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        tint = Color(0xFF00CEC9),
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
                                         text = uiState.currentWorkspace
                                             ?.substringAfterLast("/")
                                             ?.ifBlank { uiState.currentWorkspace }
-                                            ?: "No workspace",
+                                            ?: "aimon",
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        color = Color.White,
                                         maxLines = 1
                                     )
-                                    if (uiState.allowedWorkspaces.size > 1) {
-                                        Icon(
-                                            imageVector = if (workspaceDropdownExpanded)
-                                                Icons.Default.KeyboardArrowUp
-                                            else
-                                                Icons.Default.KeyboardArrowDown,
-                                            contentDescription = "Switch workspace",
-                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = "Switch workspace",
+                                        tint = Color(0xFF00CEC9),
+                                        modifier = Modifier.size(18.dp)
+                                    )
                                 }
                             }
 
@@ -115,33 +108,21 @@ fun FilesScreen(
                                                 Icon(
                                                     imageVector = if (isActive) Icons.Default.FolderOpen else Icons.Default.Folder,
                                                     contentDescription = null,
-                                                    tint = if (isActive) MaterialTheme.colorScheme.primary
-                                                           else MaterialTheme.colorScheme.onSurface,
+                                                    tint = if (isActive) Color(0xFF00CEC9) else Color.White,
                                                     modifier = Modifier.size(18.dp)
                                                 )
-                                                Column {
-                                                    Text(
-                                                        text = ws.substringAfterLast("/").ifBlank { ws },
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-                                                        color = if (isActive) MaterialTheme.colorScheme.primary
-                                                                else MaterialTheme.colorScheme.onSurface
-                                                    )
-                                                    Text(
-                                                        text = ws,
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
+                                                Text(
+                                                    text = ws.substringAfterLast("/").ifBlank { ws },
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (isActive) Color(0xFF00CEC9) else Color.White
+                                                )
                                             }
                                         },
                                         onClick = {
                                             workspaceDropdownExpanded = false
                                             onChangeWorkspace(ws)
-                                        },
-                                        trailingIcon = if (isActive) {
-                                            { Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp)) }
-                                        } else null
+                                        }
                                     )
                                 }
                             }
@@ -151,21 +132,21 @@ fun FilesScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
-                ),
-                actions = {
-                    IconButton(onClick = onRefresh) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "Refresh",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
+                    containerColor = Color.Transparent
+                )
             )
         },
-        containerColor = MaterialTheme.colorScheme.background
-
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = onRefresh,
+                containerColor = Color(0xFF1E3A40),
+                contentColor = Color.White,
+                shape = androidx.compose.foundation.shape.CircleShape
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(24.dp))
+            }
+        },
+        containerColor = Color(0xFF0F1015)
     ) { paddingValues ->
         Box(
             modifier = Modifier
@@ -183,20 +164,20 @@ fun FilesScreen(
                         Icons.Default.FolderOff,
                         contentDescription = null,
                         modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        tint = Color(0xFF6B7280)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "No files found",
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = Color(0xFF9CA3AF)
                     )
                 }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp, start = 16.dp, end = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(uiState.fileTree) { node ->
                         FileTreeNode(
@@ -228,12 +209,15 @@ fun FileTreeNode(
     onOpenFile: (String) -> Unit
 ) {
     val isExpanded = expandedFolders.contains(node.path)
-    val isTopLevel = depth == 0
 
-    val content = @Composable {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    if (node.isDir && isExpanded) Color(0xFF1E2630) else Color.Transparent
+                )
                 .clickable {
                     if (node.isDir) {
                         onToggleFolder(node.path)
@@ -241,19 +225,27 @@ fun FileTreeNode(
                         onOpenFile(node.path)
                     }
                 }
-                .padding(vertical = 12.dp, horizontal = 16.dp)
-                .padding(start = (depth * 24).dp),
+                .padding(vertical = 10.dp, horizontal = 12.dp)
+                .padding(start = (depth * 20).dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val (icon, tint) = getIconForNode(node, isExpanded)
-            
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(tint.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
+            if (node.isDir) {
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
+                    contentDescription = null,
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(20.dp)
+                )
+            } else {
+                val (icon, tint) = getIconForNode(node)
+                Spacer(modifier = Modifier.width(26.dp))
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
@@ -261,87 +253,46 @@ fun FileTreeNode(
                     modifier = Modifier.size(20.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(16.dp))
+
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = node.name,
-                style = if (node.isDir) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (node.isDir) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (node.isDir) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                color = Color.White
             )
-            
-            if (node.isDir) {
-                Spacer(modifier = Modifier.weight(1f))
-                Icon(
-                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.size(20.dp)
-                )
-            }
         }
-    }
 
-    if (isTopLevel) {
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.elevatedCardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Column {
-                content()
-                val children = node.children
-                if (node.isDir && isExpanded && children != null) {
-                    HorizontalDivider(modifier = Modifier.padding(start = 56.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                    children.forEach { child ->
-                        FileTreeNode(
-                            node = child,
-                            depth = depth + 1,
-                            expandedFolders = expandedFolders,
-                            onToggleFolder = onToggleFolder,
-                            onOpenFile = onOpenFile
-                        )
-                    }
-                }
-            }
-        }
-    } else {
-        Column {
-            content()
-            val children = node.children
-            if (node.isDir && isExpanded && children != null) {
-                children.forEach { child ->
-                    FileTreeNode(
-                        node = child,
-                        depth = depth + 1,
-                        expandedFolders = expandedFolders,
-                        onToggleFolder = onToggleFolder,
-                        onOpenFile = onOpenFile
-                    )
-                }
+        val children = node.children
+        if (node.isDir && isExpanded && children != null) {
+            children.forEach { child ->
+                FileTreeNode(
+                    node = child,
+                    depth = depth + 1,
+                    expandedFolders = expandedFolders,
+                    onToggleFolder = onToggleFolder,
+                    onOpenFile = onOpenFile
+                )
             }
         }
     }
 }
 
 @Composable
-private fun getIconForNode(node: FileNode, isExpanded: Boolean): Pair<ImageVector, Color> {
+private fun getIconForNode(node: FileNode): Pair<ImageVector, Color> {
     if (node.isDir) {
-        return Pair(
-            if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
-            Color(0xFF81D4FA) // Light blue for folders
-        )
+        return Pair(Icons.Default.Folder, Color(0xFF38BDF8))
     }
     
-    val ext = node.name.substringAfterLast('.', "")
-    return when (ext.lowercase()) {
-        "kt", "java" -> Pair(Icons.Default.Code, Color(0xFFC62828)) // Kotlin/Java
-        "xml" -> Pair(Icons.Default.Code, Color(0xFFE65100))
-        "json" -> Pair(Icons.Default.DataObject, Color(0xFF2E7D32))
-        "md", "txt" -> Pair(Icons.AutoMirrored.Filled.Article, Color(0xFF4527A0))
-        "png", "jpg", "jpeg", "webp" -> Pair(Icons.Default.Image, Color(0xFF00695C))
-        else -> Pair(Icons.Default.Description, Color(0xFF616161))
+    val nameLower = node.name.lowercase()
+    val ext = node.name.substringAfterLast('.', "").lowercase()
+    return when {
+        ext in listOf("cxx", "cpp", "c", "hxx", "hpp", "h") -> Pair(Icons.Default.Code, Color(0xFF38BDF8))
+        nameLower == "makefile" -> Pair(Icons.Default.Build, Color(0xFF94A3B8))
+        nameLower.startsWith("cmakelists") -> Pair(Icons.Default.Settings, Color(0xFF94A3B8))
+        ext in listOf("md", "txt") -> Pair(Icons.AutoMirrored.Filled.Article, Color(0xFF94A3B8))
+        ext in listOf("kt", "java") -> Pair(Icons.Default.Code, Color(0xFFA855F7))
+        ext in listOf("json", "xml", "yaml", "yml") -> Pair(Icons.Default.DataObject, Color(0xFFF59E0B))
+        else -> Pair(Icons.Default.Description, Color(0xFF94A3B8))
     }
 }

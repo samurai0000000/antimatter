@@ -1,6 +1,7 @@
 package dev.saifmukhtar.antimatter.feature.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -11,6 +12,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.toArgb
@@ -41,39 +44,63 @@ fun ToolCallCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp, horizontal = 16.dp),
+            .padding(vertical = 4.dp, horizontal = 12.dp),
         horizontalArrangement = Arrangement.Start
     ) {
         Box(
             modifier = Modifier
-                .background(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = RoundedCornerShape(4.dp)
+                .fillMaxWidth()
+                .border(
+                    width = 1.dp,
+                    color = Color(0xFF2A2B32),
+                    shape = RoundedCornerShape(14.dp)
                 )
-                .padding(vertical = 6.dp, horizontal = 10.dp)
+                .background(
+                    color = Color(0xFF16161B),
+                    shape = RoundedCornerShape(14.dp)
+                )
+                .clip(RoundedCornerShape(14.dp))
+                .padding(vertical = 12.dp, horizontal = 16.dp)
         ) {
             Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Terminal,
-                        contentDescription = "Tool",
-                        tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
                     Text(
-                        text = step.displayText,
-                        color = MaterialTheme.colorScheme.secondary,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontFamily = FontFamily.Monospace
+                        text = "Using tool: ${step.tool ?: "run_command"}",
+                        color = androidx.compose.ui.graphics.Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
                     )
+
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = androidx.compose.ui.graphics.Color(0xFF0F9D58),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "✔ Success",
+                            color = androidx.compose.ui.graphics.Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                    }
                 }
-                
-                if (parsedArgs != null && parsedArgs.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    MarkdownText(
-                        markdown = "```json\n$parsedArgs\n```",
-                        textColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
+
+                val cmd = step.command ?: step.value
+                if (!cmd.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (cmd.startsWith("CommandLine:")) cmd else "CommandLine: $cmd",
+                        color = androidx.compose.ui.graphics.Color(0xFFD1D5DB),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace
                     )
                 }
                 

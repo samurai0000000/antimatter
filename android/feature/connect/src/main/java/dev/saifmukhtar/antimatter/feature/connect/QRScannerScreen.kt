@@ -2,46 +2,50 @@ package dev.saifmukhtar.antimatter.feature.connect
 
 import android.Manifest
 import android.content.Context
+import android.net.Uri
+import android.os.Build
 import android.util.Log
 import android.view.ViewGroup
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import com.google.zxing.BinaryBitmap
-import com.google.zxing.MultiFormatReader
-import com.google.zxing.PlanarYUVLuminanceSource
-import com.google.zxing.common.HybridBinarizer
-import kotlinx.coroutines.launch
-import org.json.JSONObject
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
-import android.graphics.Bitmap
-import android.graphics.ImageDecoder
-import android.net.Uri
-import android.os.Build
-import android.provider.MediaStore
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.filled.PhotoLibrary
-import com.google.zxing.RGBLuminanceSource
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -57,11 +61,30 @@ fun QRScannerScreen(
         if (!hasDetected) {
             hasDetected = true
             try {
-                val uri = android.net.Uri.parse(barcodeValue)
+                // Trigger quick haptic vibration pulse
+                try {
+                    val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        vibrator?.vibrate(android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator?.vibrate(50)
+                    }
+                } catch (_: Exception) {}
+
+                val uri = Uri.parse(barcodeValue)
+                val isAimonScheme = (uri.scheme == "aimon" && uri.host == "pair") ||
+                                    (uri.scheme == "aimon" && uri.path == "/pair")
                 val isAntimatterScheme = uri.scheme == "antimatter" && uri.host == "connect"
                 val isHttpsScheme = uri.scheme == "https" && uri.host == "antimatter.saifmukhtar.dev" && uri.path == "/connect"
                 
-                if (isAntimatterScheme || isHttpsScheme) {
+                if (isAimonScheme) {
+                    val host = uri.getQueryParameter("host") ?: "127.0.0.1"
+                    val port = uri.getQueryParameter("port") ?: "3883"
+                    val secret = uri.getQueryParameter("secret") ?: ""
+                    val url = "http://$host:$port"
+                    onQRScanned(url, secret, null, null, null)
+                } else if (isAntimatterScheme || isHttpsScheme) {
                     val url = uri.getQueryParameter("url")
                     val token = uri.getQueryParameter("token")
                     var cfId = uri.getQueryParameter("cfid")
@@ -105,6 +128,12 @@ fun QRScannerScreen(
                         Log.e("QRScanner", "Missing url or token in QR: $barcodeValue")
                         hasDetected = false
                     }
+                } else if (uri.scheme == "http" || uri.scheme == "https") {
+                    val host = uri.host ?: "127.0.0.1"
+                    val port = if (uri.port > 0) uri.port.toString() else "3883"
+                    val secret = uri.getQueryParameter("secret") ?: ""
+                    val url = "${uri.scheme}://$host:$port"
+                    onQRScanned(url, secret, null, null, null)
                 } else {
                     Log.e("QRScanner", "Invalid QR scheme: $barcodeValue")
                     hasDetected = false
@@ -121,30 +150,27 @@ fun QRScannerScreen(
     ) { uri: Uri? ->
         uri?.let {
             try {
-                val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, it))
-                } else {
-                    @Suppress("DEPRECATION")
-                    MediaStore.Images.Media.getBitmap(context.contentResolver, it)
-                }
-
-                val softwareBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-                val intArray = IntArray(softwareBitmap.width * softwareBitmap.height)
-                softwareBitmap.getPixels(intArray, 0, softwareBitmap.width, 0, 0, softwareBitmap.width, softwareBitmap.height)
-                
-                val source = RGBLuminanceSource(softwareBitmap.width, softwareBitmap.height, intArray)
-                val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-                
-                val hints = java.util.EnumMap<com.google.zxing.DecodeHintType, Any>(com.google.zxing.DecodeHintType::class.java)
-                hints[com.google.zxing.DecodeHintType.TRY_HARDER] = true
-                hints[com.google.zxing.DecodeHintType.POSSIBLE_FORMATS] = listOf(com.google.zxing.BarcodeFormat.QR_CODE)
-                
-                val result = MultiFormatReader().decode(binaryBitmap, hints)
-                
-                handleBarcode(result.text)
+                val inputImage = InputImage.fromFilePath(context, it)
+                val options = BarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                    .build()
+                val scanner = BarcodeScanning.getClient(options)
+                scanner.process(inputImage)
+                    .addOnSuccessListener { barcodes ->
+                        val rawValue = barcodes.firstOrNull()?.rawValue
+                        if (!rawValue.isNullOrBlank()) {
+                            handleBarcode(rawValue)
+                        } else {
+                            Toast.makeText(context, "No valid QR code found in image", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e("QRScanner", "Failed to decode QR from image", e)
+                        Toast.makeText(context, "Failed to read image", Toast.LENGTH_SHORT).show()
+                    }
             } catch (e: Exception) {
-                Log.e("QRScanner", "Failed to decode QR from image", e)
-                Toast.makeText(context, "No valid QR code found in image", Toast.LENGTH_SHORT).show()
+                Log.e("QRScanner", "Failed to process image URI", e)
+                Toast.makeText(context, "Failed to load image", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -176,6 +202,62 @@ fun QRScannerScreen(
                 Box(modifier = Modifier.fillMaxSize()) {
                     CameraPreview(onBarcodeDetected = handleBarcode)
                     
+                    // Viewfinder Scan Area Overlay
+                    val infiniteTransition = rememberInfiniteTransition(label = "scanner")
+                    val scanProgress by infiniteTransition.animateFloat(
+                        initialValue = 0f,
+                        targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(2200, easing = LinearEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "laser"
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(280.dp)
+                            .align(Alignment.Center)
+                            .border(
+                                width = 3.dp,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(20.dp)
+                            )
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                            val laserY = size.height * scanProgress
+                            drawLine(
+                                brush = Brush.horizontalGradient(
+                                    listOf(
+                                        Color.Transparent,
+                                        Color(0xFFFF9800),
+                                        Color.White,
+                                        Color(0xFFFF9800),
+                                        Color.Transparent
+                                    )
+                                ),
+                                start = Offset(0f, laserY),
+                                end = Offset(size.width, laserY),
+                                strokeWidth = 6f
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.75f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 96.dp)
+                    ) {
+                        Text(
+                            text = "Point camera at the Web Dashboard QR Code",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+                        )
+                    }
+
                     FloatingActionButton(
                         onClick = { galleryLauncher.launch("image/*") },
                         modifier = Modifier
@@ -236,9 +318,10 @@ fun CameraPreview(onBarcodeDetected: (String) -> Unit) {
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
 
+                val mainExecutor = ContextCompat.getMainExecutor(ctx)
                 imageAnalysis.setAnalyzer(
                     Executors.newSingleThreadExecutor(),
-                    QRCodeAnalyzer { barcodeValue ->
+                    QRCodeAnalyzer(mainExecutor) { barcodeValue ->
                         onBarcodeDetected(barcodeValue)
                     }
                 )
@@ -263,31 +346,48 @@ fun CameraPreview(onBarcodeDetected: (String) -> Unit) {
     )
 }
 
-class QRCodeAnalyzer(private val onBarcodeDetected: (String) -> Unit) : ImageAnalysis.Analyzer {
-    private val reader = MultiFormatReader()
+class QRCodeAnalyzer(
+    private val mainExecutor: Executor,
+    private val onBarcodeDetected: (String) -> Unit
+) : ImageAnalysis.Analyzer {
 
-    override fun analyze(image: ImageProxy) {
-        val buffer = image.planes[0].buffer
-        val data = ByteArray(buffer.remaining())
-        buffer.get(data)
+    private val options = BarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        .build()
+    private val scanner = BarcodeScanning.getClient(options)
+    private var isDetected = false
 
-        val width = image.width
-        val height = image.height
+    @androidx.annotation.OptIn(ExperimentalGetImage::class)
+    override fun analyze(imageProxy: ImageProxy) {
+        if (isDetected) {
+            imageProxy.close()
+            return
+        }
 
-        val source = PlanarYUVLuminanceSource(
-            data, width, height,
-            0, 0, width, height, false
-        )
-
-        val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-
-        try {
-            val result = reader.decode(binaryBitmap)
-            onBarcodeDetected(result.text)
-        } catch (e: Exception) {
-            // ZXing throws NotFoundException if no QR is in this frame
-        } finally {
-            image.close()
+        val mediaImage = imageProxy.image
+        if (mediaImage != null) {
+            val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+            scanner.process(image)
+                .addOnSuccessListener { barcodes ->
+                    for (barcode in barcodes) {
+                        val rawValue = barcode.rawValue
+                        if (!rawValue.isNullOrBlank() && !isDetected) {
+                            isDetected = true
+                            mainExecutor.execute {
+                                onBarcodeDetected(rawValue)
+                            }
+                            break
+                        }
+                    }
+                }
+                .addOnFailureListener { e ->
+                    Log.e("QRCodeAnalyzer", "Barcode scan failure", e)
+                }
+                .addOnCompleteListener {
+                    imageProxy.close()
+                }
+        } else {
+            imageProxy.close()
         }
     }
 }

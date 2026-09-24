@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -55,44 +56,39 @@ fun ThoughtGroupBubble(
             .alpha(alpha),
         horizontalArrangement = Arrangement.Start
     ) {
-        // Spacer for AI avatar alignment
-        Spacer(modifier = Modifier.width(48.dp))
-        
         Column(
             modifier = Modifier
+                .fillMaxWidth()
                 .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                    shape = RoundedCornerShape(12.dp)
+                    width = 1.5.dp,
+                    color = Color(0xFF6C5CE7),
+                    shape = RoundedCornerShape(16.dp)
                 )
                 .background(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                    shape = RoundedCornerShape(12.dp)
+                    color = Color(0xFF141419),
+                    shape = RoundedCornerShape(16.dp)
                 )
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(16.dp))
                 .clickable { expanded = !expanded }
                 .then(if (isLatest && !expanded) Modifier.shimmerEffect() else Modifier)
-                .padding(12.dp)
+                .padding(16.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Lightbulb,
-                    contentDescription = "Thinking",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = if (isLatest) "Thinking..." else "Thought Process",
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium
+                    text = if (isLatest && !expanded) "Thinking..." else "Thinking Process (${steps.size} steps)",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 Icon(
-                    imageVector = if (expanded) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowDown,
                     contentDescription = "Expand",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
+                    tint = Color(0xFF9CA3AF),
+                    modifier = Modifier.size(20.dp)
                 )
             }
             
@@ -102,13 +98,15 @@ fun ThoughtGroupBubble(
                 val context = LocalContext.current
 
                 Column(modifier = Modifier.padding(top = 12.dp)) {
-                    for (step in steps) {
+                    steps.forEachIndexed { idx, step ->
                         val text = step.value
                         if (!text.isNullOrBlank()) {
+                            val displayText = if (text.trim().matches(Regex("^\\d+\\..*", RegexOption.DOT_MATCHES_ALL))) text else "${idx + 1}. $text"
                             MarkdownText(
-                                markdown = text,
-                                textColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
+                                markdown = displayText,
+                                textColor = Color(0xFFD1D5DB).toArgb()
                             )
+                            Spacer(modifier = Modifier.height(6.dp))
                         }
                     }
                     IconButton(
@@ -124,7 +122,7 @@ fun ThoughtGroupBubble(
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
                             contentDescription = "Copy thought",
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                            tint = Color(0xFF6C5CE7),
                             modifier = Modifier.size(16.dp)
                         )
                     }

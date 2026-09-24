@@ -57,80 +57,33 @@ fun ChatBubble(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 6.dp, horizontal = 12.dp),
+                .padding(vertical = 4.dp, horizontal = 12.dp),
             horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
         ) {
-            if (!isUser) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.primary,
-                                    MaterialTheme.colorScheme.secondary
-                                )
-                            ),
-                            shape = CircleShape
-                        )
-                        .align(Alignment.Bottom),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Chat,
-                        contentDescription = "AI",
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(12.dp))
-            }
-
             var showCopyButton by remember { mutableStateOf(false) }
             val clipboardManager = LocalClipboardManager.current
             val context = LocalContext.current
 
-            val gradientBrush = if (isUser) {
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.primary,
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                    )
-                )
-            } else {
-                Brush.verticalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.surface,
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    )
-                )
-            }
-
             Box(
                 modifier = Modifier
                     .weight(1f, fill = false)
-                    .padding(end = if (isUser) 0.dp else 48.dp, start = if (isUser) 48.dp else 0.dp)
+                    .padding(end = if (isUser) 0.dp else 32.dp, start = if (isUser) 32.dp else 0.dp)
                     .background(
-                        brush = gradientBrush,
-                        shape = RoundedCornerShape(
-                            topStart = 24.dp,
-                            topEnd = 24.dp,
-                            bottomStart = if (isUser) 24.dp else 4.dp,
-                            bottomEnd = if (isUser) 4.dp else 24.dp
-                        )
+                        color = if (isUser) Color(0xFF38438C) else Color(0xFF18181F),
+                        shape = RoundedCornerShape(16.dp)
                     )
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null
                     ) { showCopyButton = !showCopyButton }
-                    .padding(16.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
                 Column {
                     if (isUser) {
                         androidx.compose.foundation.text.selection.SelectionContainer {
                             Text(
                                 text = step.displayText,
-                                color = textColor,
+                                color = Color.White,
                                 style = MaterialTheme.typography.bodyLarge
                             )
                         }
@@ -165,27 +118,6 @@ fun ChatBubble(
                             )
                         }
                     }
-                }
-            }
-            
-            if (isUser) {
-                Spacer(modifier = Modifier.width(12.dp))
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(
-                            MaterialTheme.colorScheme.secondaryContainer,
-                            shape = CircleShape
-                        )
-                        .align(Alignment.Bottom),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = "User",
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.size(20.dp)
-                    )
                 }
             }
         }

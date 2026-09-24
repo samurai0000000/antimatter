@@ -77,14 +77,16 @@ class ChatViewModel @Inject constructor(
     init {
         viewModelScope.launch(Dispatchers.IO) {
             val localAgents = appDao.getAllAgentsFlow().firstOrNull()
-            if (localAgents != null && localAgents.isNotEmpty()) {
-                val agentInfos = localAgents.map { dev.saifmukhtar.antimatter.core.network.InboundMessage.AgentInfo(it.id, it.name, it.status) }
-                _uiState.update { state -> 
-                    state.copy(
-                        availableAgents = agentInfos,
-                        activeAgentId = null // Require manual selection
-                    )
-                }
+            val agentInfos = if (localAgents != null && localAgents.isNotEmpty()) {
+                localAgents.map { dev.saifmukhtar.antimatter.core.network.InboundMessage.AgentInfo(it.id, it.name, it.status) }
+            } else {
+                listOf(dev.saifmukhtar.antimatter.core.network.InboundMessage.AgentInfo("antigravity", "Google Antigravity", "online"))
+            }
+            _uiState.update { state -> 
+                state.copy(
+                    availableAgents = agentInfos,
+                    activeAgentId = state.activeAgentId ?: agentInfos.firstOrNull()?.id ?: "antigravity"
+                )
             }
         }
 
@@ -109,7 +111,11 @@ class ChatViewModel @Inject constructor(
             scrollStateFlow.debounce(500).collect { (index, offset) ->
                 _uiState.value.conversationId?.let { cid ->
                     withContext(Dispatchers.IO) {
-                        appDao.updateScrollState(cid, index, offset)
+                        try {
+                            appDao.updateScrollState(cid, index, offset)
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "updateScrollState error", e)
+                        }
                     }
                 }
             }
@@ -130,7 +136,7 @@ class ChatViewModel @Inject constructor(
                         webSocket.sendMessage(OutboundMessage.SubscribeConversation(
                             conversationId = cid,
                             lastKnownStepCount = _uiState.value.steps.size,
-                            agentId = _uiState.value.activeAgentId
+                            agentId = _uiState.value.activeAgentId ?: "antigravity"
                         ))
                     }
                 }
@@ -160,7 +166,7 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun handleInboundMessage(message: InboundMessage) {
-        val activeAgentId = _uiState.value.activeAgentId
+        val currentActiveAgent = _uiState.value.activeAgentId ?: "antigravity"
         
         // Guard: Ignore background adapter messages that don't match the active agent
         val msgAgentId = when (message) {
@@ -175,7 +181,7 @@ class ChatViewModel @Inject constructor(
             else -> null
         }
         
-        if (msgAgentId != null && msgAgentId != activeAgentId) {
+        if (msgAgentId != null && _uiState.value.activeAgentId != null && msgAgentId != _uiState.value.activeAgentId) {
             return
         }
 
@@ -196,8 +202,12 @@ class ChatViewModel @Inject constructor(
                 // Truncate local steps if server says there are fewer (due to edit)
                 message.conversationId?.let { cid ->
                     viewModelScope.launch(Dispatchers.IO) {
-                        appDao.deleteStepsFromIndex(cid, message.stepCount)
-                        appDao.updateStepCount(cid, message.stepCount)
+                        try {
+                            appDao.deleteStepsFromIndex(cid, message.stepCount)
+                            appDao.updateStepCount(cid, message.stepCount)
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "SessionState DB update error", e)
+                        }
                     }
                 }
                 val cid = message.conversationId
@@ -209,27 +219,31 @@ class ChatViewModel @Inject constructor(
             is InboundMessage.Step -> {
                 _uiState.update { state ->
                     val newSteps = state.steps.toMutableList()
-                    if (message.index < newSteps.size) {
+                    if (message.index >= 0 && message.index < newSteps.size) {
                         newSteps[message.index] = message.step
                     } else {
-                        while (newSteps.size < message.index) {
-                            newSteps.add(TrajectoryStep(case = "unknown", value = "..."))
-                        }
                         newSteps.add(message.step)
                     }
-                    state.conversationId?.let { cid ->
-                        viewModelScope.launch(Dispatchers.IO) {
-                            appDao.insertSteps(listOf(message.step.toEntity(cid, message.index)))
+                    val targetCid = state.conversationId ?: "default"
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            val existing = appDao.getConversation(targetCid)
+                            if (existing == null) {
+                                appDao.insertConversation(
+                                    ConversationEntity(
+                                        id = targetCid,
+                                        title = "Chat",
+                                        timestamp = System.currentTimeMillis(),
+                                        agentId = message.agentId ?: state.activeAgentId ?: "antigravity"
+                                    )
+                                )
+                            }
+                            appDao.insertSteps(listOf(message.step.toEntity(targetCid, newSteps.size - 1)))
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "Safe DB insert error", e)
                         }
                     }
-                    var stillGenerating = state.isGenerating
-                    when (message.step.stepCase) {
-                        StepCase.PLANNER_RESPONSE, StepCase.TOOL_CALL -> stillGenerating = true
-                        StepCase.TEXT, StepCase.MARKDOWN_CHUNK, StepCase.ERROR_MESSAGE, 
-                        StepCase.APPROVAL_INTERACTION, StepCase.ASK_QUESTION, StepCase.ELICITATION -> stillGenerating = false
-                        else -> {}
-                    }
-                    state.copy(steps = newSteps, isGenerating = stillGenerating)
+                    state.copy(steps = newSteps, isGenerating = false)
                 }
             }
             is InboundMessage.StepBatch -> {
@@ -239,7 +253,22 @@ class ChatViewModel @Inject constructor(
                 // Guard: If StepBatch belongs to a different conversation, save it to DB but don't update UI
                 if (targetCid != null && targetCid != currentCid) {
                     viewModelScope.launch(Dispatchers.IO) {
-                        appDao.insertSteps(message.steps.map { it.step.toEntity(targetCid, it.index) })
+                        try {
+                            val existing = appDao.getConversation(targetCid)
+                            if (existing == null) {
+                                appDao.insertConversation(
+                                    ConversationEntity(
+                                        id = targetCid,
+                                        title = "Chat",
+                                        timestamp = System.currentTimeMillis(),
+                                        agentId = message.agentId ?: "antigravity"
+                                    )
+                                )
+                            }
+                            appDao.insertSteps(message.steps.map { it.step.toEntity(targetCid, it.index) })
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "Safe DB batch insert error", e)
+                        }
                     }
                     return
                 }
@@ -248,12 +277,9 @@ class ChatViewModel @Inject constructor(
                     val newSteps = state.steps.toMutableList()
                     var stillGenerating = state.isGenerating
                     message.steps.forEach { batchStep ->
-                        if (batchStep.index < newSteps.size) {
+                        if (batchStep.index >= 0 && batchStep.index < newSteps.size) {
                             newSteps[batchStep.index] = batchStep.step
                         } else {
-                            while (newSteps.size < batchStep.index) {
-                                newSteps.add(TrajectoryStep(case = "unknown", value = "..."))
-                            }
                             newSteps.add(batchStep.step)
                         }
                         // Self-regulate generating state based on step types
@@ -264,10 +290,23 @@ class ChatViewModel @Inject constructor(
                             else -> {}
                         }
                     }
-                    val cidToSave = targetCid ?: state.conversationId
-                    cidToSave?.let { cid ->
-                        viewModelScope.launch(Dispatchers.IO) {
-                            appDao.insertSteps(message.steps.map { it.step.toEntity(cid, it.index) })
+                    val cidToSave = targetCid ?: state.conversationId ?: "default"
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            val existing = appDao.getConversation(cidToSave)
+                            if (existing == null) {
+                                appDao.insertConversation(
+                                    ConversationEntity(
+                                        id = cidToSave,
+                                        title = "Chat",
+                                        timestamp = System.currentTimeMillis(),
+                                        agentId = message.agentId ?: state.activeAgentId ?: "antigravity"
+                                    )
+                                )
+                            }
+                            appDao.insertSteps(message.steps.map { it.step.toEntity(cidToSave, it.index) })
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "Safe DB batch insert error", e)
                         }
                     }
                     state.copy(steps = newSteps, isGenerating = stillGenerating)
@@ -275,14 +314,12 @@ class ChatViewModel @Inject constructor(
             }
             is InboundMessage.Generating -> {
                 _uiState.update {
-                    it.copy(isGenerating = true, conversationId = message.conversationId)
+                    it.copy(isGenerating = true, conversationId = message.conversationId ?: it.conversationId)
                 }
             }
             is InboundMessage.ResponseComplete -> {
                 _uiState.update {
-                    if (it.conversationId == message.conversationId) {
-                        it.copy(isGenerating = false)
-                    } else it
+                    it.copy(isGenerating = false)
                 }
             }
             is InboundMessage.ActiveFile -> {
@@ -296,11 +333,15 @@ class ChatViewModel @Inject constructor(
             is InboundMessage.HistoryList -> {
                 android.util.Log.d("ChatViewModel", "Received HISTORY_LIST with ${message.conversations.size} conversations")
                 viewModelScope.launch(Dispatchers.IO) {
-                    message.conversations.forEach { summary ->
-                        val existing = appDao.getConversation(summary.id)
-                        if (existing == null) {
-                            appDao.insertConversation(ConversationEntity(id = summary.id, title = summary.title, timestamp = summary.timestamp, agentId = message.agentId ?: "legacy"))
+                    try {
+                        message.conversations.forEach { summary ->
+                            val existing = appDao.getConversation(summary.id)
+                            if (existing == null) {
+                                appDao.insertConversation(ConversationEntity(id = summary.id, title = summary.title, timestamp = summary.timestamp, agentId = message.agentId ?: "antigravity"))
+                            }
                         }
+                    } catch (e: Exception) {
+                        android.util.Log.e("ChatViewModel", "HistoryList DB insert error", e)
                     }
                 }
                 _uiState.update { it.copy(history = message.conversations) }
@@ -309,16 +350,20 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(artifacts = message.artifacts) }
                 _uiState.value.conversationId?.let { cid ->
                     viewModelScope.launch(Dispatchers.IO) {
-                        val entities = message.artifacts.map {
-                            val existing = appDao.getArtifact(cid, it.path)
-                            dev.saifmukhtar.antimatter.core.data.ArtifactEntity(
-                                conversationId = cid,
-                                path = it.path,
-                                name = it.name,
-                                compressedContent = existing?.compressedContent
-                            )
+                        try {
+                            val entities = message.artifacts.map {
+                                val existing = appDao.getArtifact(cid, it.path)
+                                dev.saifmukhtar.antimatter.core.data.ArtifactEntity(
+                                    conversationId = cid,
+                                    path = it.path,
+                                    name = it.name,
+                                    compressedContent = existing?.compressedContent
+                                )
+                            }
+                            appDao.insertArtifacts(entities)
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "ArtifactsList DB insert error", e)
                         }
-                        appDao.insertArtifacts(entities)
                     }
                 }
             }
@@ -326,16 +371,20 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(activeArtifactContent = message.content) }
                 _uiState.value.conversationId?.let { cid ->
                     viewModelScope.launch(Dispatchers.IO) {
-                        val compressed = GzipUtils.compress(message.content)
-                        val name = message.path.substringAfterLast("/")
-                        appDao.insertArtifacts(listOf(
-                            dev.saifmukhtar.antimatter.core.data.ArtifactEntity(
-                                conversationId = cid,
-                                path = message.path,
-                                name = name,
-                                compressedContent = compressed
-                            )
-                        ))
+                        try {
+                            val compressed = GzipUtils.compress(message.content)
+                            val name = message.path.substringAfterLast("/")
+                            appDao.insertArtifacts(listOf(
+                                dev.saifmukhtar.antimatter.core.data.ArtifactEntity(
+                                    conversationId = cid,
+                                    path = message.path,
+                                    name = name,
+                                    compressedContent = compressed
+                                )
+                            ))
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatViewModel", "ArtifactContent DB insert error", e)
+                        }
                     }
                 }
             }
@@ -355,12 +404,10 @@ class ChatViewModel @Inject constructor(
             }
             is InboundMessage.AvailableAgents -> {
                 val oldActiveAgentId = _uiState.value.activeAgentId
-                var newActiveAgentId = oldActiveAgentId
-                val oldAgent = _uiState.value.availableAgents.find { it.id == oldActiveAgentId }
-                
-                if (oldActiveAgentId != null && message.agents.none { it.id == oldActiveAgentId }) {
-                    val sameNameAgent = message.agents.find { it.name == oldAgent?.name }
-                    newActiveAgentId = sameNameAgent?.id ?: message.agents.firstOrNull()?.id
+                val newActiveAgentId = if (oldActiveAgentId != null && message.agents.any { it.id == oldActiveAgentId }) {
+                    oldActiveAgentId
+                } else {
+                    message.agents.firstOrNull()?.id ?: "antigravity"
                 }
 
                 _uiState.update { it.copy(
@@ -369,19 +416,18 @@ class ChatViewModel @Inject constructor(
                     activeAgentId = newActiveAgentId
                 ) }
 
-                if (newActiveAgentId != null && newActiveAgentId != oldActiveAgentId) {
-                    _uiState.update { it.copy(
-                        conversationId = null,
-                        steps = emptyList(),
-                        selectedImageUri = null
-                    ) }
+                if (newActiveAgentId != oldActiveAgentId) {
                     requestHistory()
                 }
 
                 viewModelScope.launch(Dispatchers.IO) {
-                    appDao.deleteAllAgents()
-                    message.agents.forEach { info ->
-                        appDao.insertAgent(dev.saifmukhtar.antimatter.core.data.AgentEntity(id = info.id, name = info.name, status = info.status, lastSeen = System.currentTimeMillis()))
+                    try {
+                        appDao.deleteAllAgents()
+                        message.agents.forEach { info ->
+                            appDao.insertAgent(dev.saifmukhtar.antimatter.core.data.AgentEntity(id = info.id, name = info.name, status = info.status, lastSeen = System.currentTimeMillis()))
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("ChatViewModel", "AvailableAgents DB insert error", e)
                     }
                 }
             }
@@ -396,7 +442,14 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessage(text: String) {
-        val activeAgentId = _uiState.value.activeAgentId ?: return
+        val activeAgentId = _uiState.value.activeAgentId 
+            ?: _uiState.value.availableAgents.firstOrNull()?.id 
+            ?: "antigravity"
+            
+        if (_uiState.value.activeAgentId == null) {
+            _uiState.update { it.copy(activeAgentId = activeAgentId) }
+        }
+        
         if (text.isBlank() && _uiState.value.selectedImageUri == null) return
         
         val imageUri = _uiState.value.selectedImageUri
@@ -431,7 +484,7 @@ class ChatViewModel @Inject constructor(
                         val base64 = Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
                         val dataUri = "data:image/jpeg;base64,$base64"
                         
-                        webSocket.sendMessage(OutboundMessage.SendMessage(textToSend, images = listOf(dataUri), agentId = _uiState.value.activeAgentId))
+                        webSocket.sendMessage(OutboundMessage.SendMessage(textToSend, images = listOf(dataUri), agentId = activeAgentId))
                         
                         if (scaledBitmap != bitmap) {
                             scaledBitmap.recycle()
@@ -450,15 +503,14 @@ class ChatViewModel @Inject constructor(
                 }
             }
         } else {
-            webSocket.sendMessage(OutboundMessage.SendMessage(textToSend, agentId = _uiState.value.activeAgentId))
+            webSocket.sendMessage(OutboundMessage.SendMessage(textToSend, agentId = activeAgentId))
         }
     }
 
     fun startNewConversation() {
         _uiState.update { it.copy(steps = emptyList(), conversationId = null, isGenerating = false) }
-        _uiState.value.activeAgentId?.let {
-            webSocket.sendMessage(OutboundMessage.NewConversation(agentId = it))
-        }
+        val agentId = _uiState.value.activeAgentId ?: "antigravity"
+        webSocket.sendMessage(OutboundMessage.NewConversation(agentId = agentId))
         requestHistory() // Refresh history after starting new conversation
     }
 

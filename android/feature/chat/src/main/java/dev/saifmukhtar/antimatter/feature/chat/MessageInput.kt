@@ -112,107 +112,85 @@ fun MessageInput(
                 }
             }
             
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(28.dp),
+                color = Color(0xFF16161B),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF383842))
             ) {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Ask Antigravity...", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)) },
-                    maxLines = 4,
-                    shape = RoundedCornerShape(24.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        unfocusedBorderColor = Color.Transparent,
-                        focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                    )
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                IconButton(
-                    onClick = {
-                        photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
+                Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Image, contentDescription = "Attach image", tint = MaterialTheme.colorScheme.secondary)
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                // Morphing Button
-                AnimatedContent(
-                    targetState = when {
-                        isGenerating -> "stop"
-                        text.isNotBlank() || selectedImageUri != null -> "send"
-                        else -> "mic"
-                    },
-                    transitionSpec = {
-                        if (targetState == "stop" || initialState == "stop") {
-                            fadeIn(animationSpec = tween(150)) togetherWith fadeOut(animationSpec = tween(150))
-                        } else {
-                            (slideInVertically { height -> height } + fadeIn() togetherWith
-                                slideOutVertically { height -> -height } + fadeOut())
-                                .using(SizeTransform(clip = false))
-                        }
-                    },
-                    label = "send_btn_morph"
-                ) { state ->
-                    when (state) {
-                        "stop" -> {
-                            FilledIconButton(
-                                onClick = onCancel,
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                                ),
-                                modifier = Modifier.size(48.dp)
-                            ) {
-                                Icon(Icons.Default.Stop, contentDescription = "Cancel")
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        modifier = Modifier.weight(1f),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.White),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF6C5CE7)),
+                        decorationBox = { innerTextField ->
+                            if (text.isEmpty()) {
+                                Text(
+                                    text = "Ask Google Antigravity...",
+                                    color = Color(0xFF9CA3AF),
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
                             }
+                            innerTextField()
                         }
-                        "send" -> {
-                            FilledIconButton(
-                                onClick = {
+                    )
+
+                    IconButton(
+                        onClick = {
+                            photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = "Attach",
+                            tint = Color(0xFFD1D5DB),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    if (isGenerating) {
+                        FilledIconButton(
+                            onClick = onCancel,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color(0xFFEF4444),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(Icons.Default.Stop, contentDescription = "Cancel", modifier = Modifier.size(20.dp))
+                        }
+                    } else {
+                        FilledIconButton(
+                            onClick = {
+                                if (text.isNotBlank() || selectedImageUri != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     onSend(text)
                                     text = ""
-                                },
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                ),
-                                modifier = Modifier.size(48.dp)
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
-                            }
-                        }
-                        "mic" -> {
-                            FilledIconButton(
-                                onClick = {
-                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                    }
-                                    try {
-                                        speechLauncher.launch(intent)
-                                    } catch (e: Exception) {
-                                        // Speech recognition not supported
-                                    }
-                                },
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ),
-                                modifier = Modifier.size(48.dp)
-                            ) {
-                                Icon(Icons.Default.Mic, contentDescription = "Dictate")
-                            }
+                                }
+                            },
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color(0xFF6C5CE7),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
                 }
