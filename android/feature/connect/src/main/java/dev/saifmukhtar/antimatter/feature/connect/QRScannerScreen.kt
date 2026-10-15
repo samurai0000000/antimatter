@@ -1,3 +1,9 @@
+/*
+ * QRScannerScreen.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.connect
 
 import android.Manifest
@@ -51,15 +57,19 @@ import java.util.concurrent.Executors
 @Composable
 fun QRScannerScreen(
     onQRScanned: (url: String, token: String, cfId: String?, cfSecret: String?, pubKey: String?) -> Unit,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onPairAimon: ((host: String, port: Int, secret: String, onResult: (Boolean, String?, String?) -> Unit) -> Unit)? = null
 ) {
     val cameraPermissionState = rememberPermissionState(Manifest.permission.CAMERA)
     val context = LocalContext.current
     var hasDetected by remember { mutableStateOf(false) }
+    var isPairing by remember { mutableStateOf(false) }
+    var pairingErrorMessage by remember { mutableStateOf<String?>(null) }
 
     val handleBarcode = { barcodeValue: String ->
-        if (!hasDetected) {
+        if (!hasDetected && !isPairing) {
             hasDetected = true
+            pairingErrorMessage = null
             try {
                 // Trigger quick haptic vibration pulse
                 try {
@@ -80,10 +90,26 @@ fun QRScannerScreen(
                 
                 if (isAimonScheme) {
                     val host = uri.getQueryParameter("host") ?: "127.0.0.1"
-                    val port = uri.getQueryParameter("port") ?: "3883"
+                    val portStr = uri.getQueryParameter("port") ?: "3883"
+                    val port = portStr.toIntOrNull() ?: 3883
                     val secret = uri.getQueryParameter("secret") ?: ""
                     val url = "http://$host:$port"
-                    onQRScanned(url, secret, null, null, null)
+                    if (onPairAimon != null) {
+                        isPairing = true
+                        onPairAimon(host, port, secret) { success, grantedToken, errMsg ->
+                            isPairing = false
+                            if (success && !grantedToken.isNullOrBlank()) {
+                                onQRScanned(url, grantedToken, null, null, null)
+                            } else {
+                                val msg = errMsg ?: "Pairing handshake failed"
+                                pairingErrorMessage = msg
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                hasDetected = false
+                            }
+                        }
+                    } else {
+                        onQRScanned(url, secret, null, null, null)
+                    }
                 } else if (isAntimatterScheme || isHttpsScheme) {
                     val url = uri.getQueryParameter("url")
                     val token = uri.getQueryParameter("token")
@@ -130,16 +156,33 @@ fun QRScannerScreen(
                     }
                 } else if (uri.scheme == "http" || uri.scheme == "https") {
                     val host = uri.host ?: "127.0.0.1"
-                    val port = if (uri.port > 0) uri.port.toString() else "3883"
+                    val port = if (uri.port > 0) uri.port else 3883
                     val secret = uri.getQueryParameter("secret") ?: ""
                     val url = "${uri.scheme}://$host:$port"
-                    onQRScanned(url, secret, null, null, null)
+                    if (onPairAimon != null && secret.isNotBlank()) {
+                        isPairing = true
+                        onPairAimon(host, port, secret) { success, grantedToken, errMsg ->
+                            isPairing = false
+                            if (success && !grantedToken.isNullOrBlank()) {
+                                onQRScanned(url, grantedToken, null, null, null)
+                            } else {
+                                val msg = errMsg ?: "Pairing handshake failed"
+                                pairingErrorMessage = msg
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                hasDetected = false
+                            }
+                        }
+                    } else {
+                        onQRScanned(url, secret, null, null, null)
+                    }
                 } else {
                     Log.e("QRScanner", "Invalid QR scheme: $barcodeValue")
+                    Toast.makeText(context, "Invalid QR code format", Toast.LENGTH_SHORT).show()
                     hasDetected = false
                 }
             } catch (e: Exception) {
                 Log.e("QRScanner", "Invalid QR format: $barcodeValue", e)
+                Toast.makeText(context, "Invalid QR code: ${e.message}", Toast.LENGTH_SHORT).show()
                 hasDetected = false
             }
         }
@@ -243,6 +286,23 @@ fun QRScannerScreen(
                         }
                     }
 
+                    if (pairingErrorMessage != null) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.error,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(16.dp)
+                        ) {
+                            Text(
+                                text = pairingErrorMessage!!,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onError,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                            )
+                        }
+                    }
+
                     Surface(
                         color = Color.Black.copy(alpha = 0.75f),
                         shape = RoundedCornerShape(12.dp),
@@ -251,7 +311,7 @@ fun QRScannerScreen(
                             .padding(bottom = 96.dp)
                     ) {
                         Text(
-                            text = "Point camera at the Web Dashboard QR Code",
+                            text = if (isPairing) "Pairing with Aimon server..." else "Point camera at the Web Dashboard QR Code",
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color.White,
                             modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)

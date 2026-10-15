@@ -1,3 +1,9 @@
+/*
+ * ChatViewModel.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.chat
 
 import androidx.lifecycle.ViewModel
@@ -42,7 +48,7 @@ data class ChatUiState(
     val connectionState: BridgeWebSocket.ConnectionState = BridgeWebSocket.ConnectionState.DISCONNECTED,
     val isGenerating: Boolean = false,
     val steps: List<TrajectoryStep> = emptyList(),
-    val conversationId: String? = null,
+    val conversationId: String? = "new",
     val expectedStepCount: Int = 0,
     val activeFile: String? = null,
     val activeFileLanguage: String? = null,
@@ -72,7 +78,55 @@ class ChatViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    private var baseUrl: String = "http://127.0.0.1:3883"
+    private var token: String = ""
+    private var lastStepIndex: Int = -1
+    private var pendingFullRefresh: Boolean = false
+    private var pollingJob: kotlinx.coroutines.Job? = null
+
     private val scrollStateFlow = MutableSharedFlow<Pair<Int, Int>>(extraBufferCapacity = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+
+    fun configureEndpoint(url: String, authToken: String = "") {
+        baseUrl = url.trimEnd('/')
+        token = authToken
+        webSocket.configureEndpoint(baseUrl, authToken)
+        fetchConversations()
+    }
+
+    fun fetchConversations() {
+        requestHistory()
+    }
+
+    fun fetchTranscript(conversationId: String, since: Int = lastStepIndex) {
+        if (conversationId.isBlank() || conversationId == "new") return
+        webSocket.sendMessage(
+            OutboundMessage.SubscribeConversation(
+                conversationId = conversationId,
+                lastKnownStepCount = _uiState.value.steps.size,
+                sinceStepIndex = since,
+                agentId = _uiState.value.activeAgentId ?: "antigravity"
+            )
+        )
+    }
+
+    private fun startIncrementalPolling(conversationId: String) {
+        pollingJob?.cancel()
+        if (conversationId.isBlank() || conversationId == "new") return
+        pollingJob = viewModelScope.launch(Dispatchers.IO) {
+            while (_uiState.value.conversationId == conversationId) {
+                val delayMs = if (_uiState.value.isGenerating) 1000L else 2500L
+                kotlinx.coroutines.delay(delayMs)
+                if (_uiState.value.conversationId == conversationId) {
+                    val sinceIdx = if (_uiState.value.isGenerating && lastStepIndex >= 0) {
+                        lastStepIndex - 1
+                    } else {
+                        lastStepIndex
+                    }
+                    fetchTranscript(conversationId, since = sinceIdx)
+                }
+            }
+        }
+    }
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -132,12 +186,15 @@ class ChatViewModel @Inject constructor(
                     requestHistory()
                     
                     _uiState.value.conversationId?.let { cid ->
-                        // Re-subscribe to the active conversation so we don't miss new messages
-                        webSocket.sendMessage(OutboundMessage.SubscribeConversation(
-                            conversationId = cid,
-                            lastKnownStepCount = _uiState.value.steps.size,
-                            agentId = _uiState.value.activeAgentId ?: "antigravity"
-                        ))
+                        if (cid != "new") {
+                            // Re-subscribe to the active conversation using incremental step index
+                            webSocket.sendMessage(OutboundMessage.SubscribeConversation(
+                                conversationId = cid,
+                                lastKnownStepCount = _uiState.value.steps.size,
+                                sinceStepIndex = lastStepIndex,
+                                agentId = _uiState.value.activeAgentId ?: "antigravity"
+                            ))
+                        }
                     }
                 }
                 wasConnected = isConnected
@@ -188,7 +245,21 @@ class ChatViewModel @Inject constructor(
         when (message) {
             is InboundMessage.SessionState -> {
                 val previousConversationId = _uiState.value.conversationId
-                
+                if (message.conversationId == "new") {
+                    lastStepIndex = -1
+                    pendingFullRefresh = false
+                    _uiState.update {
+                        it.copy(
+                            conversationId = "new",
+                            steps = emptyList(),
+                            expectedStepCount = 0,
+                            currentModel = message.model ?: it.currentModel
+                        )
+                    }
+                    return
+                }
+
+                pendingFullRefresh = true
                 _uiState.update {
                     it.copy(
                         conversationId = message.conversationId,
@@ -213,10 +284,13 @@ class ChatViewModel @Inject constructor(
                 val cid = message.conversationId
                 // Only subscribe if the conversation actually changed
                 if (cid != null && cid != previousConversationId) {
-                    subscribeConversation(cid)
+                    startIncrementalPolling(cid)
                 }
             }
             is InboundMessage.Step -> {
+                if (message.step.stepIndex > lastStepIndex) {
+                    lastStepIndex = message.step.stepIndex
+                }
                 _uiState.update { state ->
                     val newSteps = state.steps.toMutableList()
                     if (message.index >= 0 && message.index < newSteps.size) {
@@ -250,8 +324,8 @@ class ChatViewModel @Inject constructor(
                 val targetCid = message.conversationId
                 val currentCid = _uiState.value.conversationId
 
-                // Guard: If StepBatch belongs to a different conversation, save it to DB but don't update UI
-                if (targetCid != null && targetCid != currentCid) {
+                // Guard: If StepBatch belongs to a different conversation (unless currentCid was "new"), save to DB
+                if (targetCid != null && currentCid != null && currentCid != "new" && targetCid != currentCid) {
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             val existing = appDao.getConversation(targetCid)
@@ -265,7 +339,7 @@ class ChatViewModel @Inject constructor(
                                     )
                                 )
                             }
-                            appDao.insertSteps(message.steps.map { it.step.toEntity(targetCid, it.index) })
+                            appDao.insertSteps(message.steps.mapIndexed { idx, s -> s.step.toEntity(targetCid, if (s.index >= 0) s.index else idx) })
                         } catch (e: Exception) {
                             android.util.Log.e("ChatViewModel", "Safe DB batch insert error", e)
                         }
@@ -273,53 +347,144 @@ class ChatViewModel @Inject constructor(
                     return
                 }
 
+                val isFullReplace = pendingFullRefresh && (message.steps.isNotEmpty() || !_uiState.value.isGenerating)
+                if (message.steps.isNotEmpty() || !_uiState.value.isGenerating) {
+                    pendingFullRefresh = false
+                }
+
                 _uiState.update { state ->
-                    val newSteps = state.steps.toMutableList()
-                    var stillGenerating = state.isGenerating
+                    val newSteps = if (isFullReplace) {
+                        mutableListOf()
+                    } else {
+                        state.steps.toMutableList()
+                    }
+                    val prevMaxStepIdx = lastStepIndex
+
                     message.steps.forEach { batchStep ->
+                        val stepIdx = batchStep.step.stepIndex
+                        if (!isFullReplace) {
+                            if (batchStep.step.stepCase == StepCase.USER_INPUT) {
+                                val optIdx = newSteps.indexOfFirst {
+                                    it.stepCase == StepCase.USER_INPUT && it.stepIndex < 0
+                                }
+                                if (optIdx >= 0) {
+                                    newSteps[optIdx] = batchStep.step
+                                    if (stepIdx > lastStepIndex) {
+                                        lastStepIndex = stepIdx
+                                    }
+                                    return@forEach
+                                }
+                            }
+                            if (stepIdx >= 0 && stepIdx <= prevMaxStepIdx) {
+                                val existingIdx = newSteps.indexOfFirst {
+                                    it.stepIndex == stepIdx && it.stepCase == batchStep.step.stepCase
+                                }
+                                if (existingIdx >= 0) {
+                                    newSteps[existingIdx] = batchStep.step
+                                    return@forEach
+                                }
+                            }
+                        }
+                        if (stepIdx > lastStepIndex) {
+                            lastStepIndex = stepIdx
+                        }
                         if (batchStep.index >= 0 && batchStep.index < newSteps.size) {
                             newSteps[batchStep.index] = batchStep.step
                         } else {
                             newSteps.add(batchStep.step)
                         }
-                        // Self-regulate generating state based on step types
-                        when (batchStep.step.stepCase) {
-                            StepCase.PLANNER_RESPONSE, StepCase.TOOL_CALL -> stillGenerating = true
-                            StepCase.TEXT, StepCase.MARKDOWN_CHUNK, StepCase.ERROR_MESSAGE, 
-                            StepCase.APPROVAL_INTERACTION, StepCase.ASK_QUESTION, StepCase.ELICITATION -> stillGenerating = false
-                            else -> {}
-                        }
                     }
-                    val cidToSave = targetCid ?: state.conversationId ?: "default"
-                    viewModelScope.launch(Dispatchers.IO) {
-                        try {
-                            val existing = appDao.getConversation(cidToSave)
-                            if (existing == null) {
-                                appDao.insertConversation(
-                                    ConversationEntity(
-                                        id = cidToSave,
-                                        title = "Chat",
-                                        timestamp = System.currentTimeMillis(),
-                                        agentId = message.agentId ?: state.activeAgentId ?: "antigravity"
-                                    )
-                                )
+
+                    val stillGenerating = if (state.isGenerating) {
+                        val lastUserIdx = newSteps.indexOfLast { it.stepCase == StepCase.USER_INPUT }
+                        val candidates = if (lastUserIdx >= 0) {
+                            newSteps.subList(lastUserIdx + 1, newSteps.size)
+                        } else {
+                            newSteps
+                        }
+                        val hasFinalReply = candidates.any { step ->
+                            when (step.stepCase) {
+                                StepCase.ERROR_MESSAGE,
+                                StepCase.APPROVAL_INTERACTION,
+                                StepCase.ASK_QUESTION,
+                                StepCase.ELICITATION -> true
+                                StepCase.TEXT,
+                                StepCase.MARKDOWN_CHUNK -> {
+                                    candidates.none { other ->
+                                        other.stepCase == StepCase.TOOL_CALL &&
+                                            other.stepIndex >= 0 &&
+                                            other.stepIndex >= step.stepIndex
+                                    }
+                                }
+                                else -> false
                             }
-                            appDao.insertSteps(message.steps.map { it.step.toEntity(cidToSave, it.index) })
-                        } catch (e: Exception) {
-                            android.util.Log.e("ChatViewModel", "Safe DB batch insert error", e)
+                        }
+                        !hasFinalReply
+                    } else {
+                        false
+                    }
+
+                    val cidToSave = targetCid ?: state.conversationId ?: "default"
+                    if (cidToSave != "new") {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                val existing = appDao.getConversation(cidToSave)
+                                if (existing == null) {
+                                    appDao.insertConversation(
+                                        ConversationEntity(
+                                            id = cidToSave,
+                                            title = "Chat",
+                                            timestamp = System.currentTimeMillis(),
+                                            agentId = message.agentId ?: state.activeAgentId ?: "antigravity"
+                                        )
+                                    )
+                                }
+                                appDao.insertSteps(newSteps.mapIndexed { idx, s -> s.toEntity(cidToSave, idx) })
+                            } catch (e: Exception) {
+                                android.util.Log.e("ChatViewModel", "Safe DB batch insert error", e)
+                            }
                         }
                     }
-                    state.copy(steps = newSteps, isGenerating = stillGenerating)
+                    state.copy(
+                        steps = newSteps,
+                        conversationId = targetCid ?: state.conversationId,
+                        isGenerating = stillGenerating
+                    )
                 }
             }
             is InboundMessage.Generating -> {
-                _uiState.update {
-                    it.copy(isGenerating = true, conversationId = message.conversationId ?: it.conversationId)
+                val prevCid = _uiState.value.conversationId
+                val resolvedCid = message.conversationId.takeIf { it.isNotBlank() } ?: prevCid
+                if (!resolvedCid.isNullOrBlank() && resolvedCid != "new" && prevCid != null && prevCid != "new" && resolvedCid != prevCid) {
+                    lastStepIndex = -1
+                    pendingFullRefresh = false
+                    _uiState.update { state ->
+                        val lastUserStep = state.steps.lastOrNull { it.stepCase == StepCase.USER_INPUT }
+                        state.copy(
+                            isGenerating = true,
+                            conversationId = resolvedCid,
+                            steps = if (lastUserStep != null) listOf(lastUserStep.copy(stepIndex = -1)) else emptyList()
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(isGenerating = true, conversationId = resolvedCid)
+                    }
+                }
+                if (!resolvedCid.isNullOrBlank() && resolvedCid != "new") {
+                    val sinceIdx = if (lastStepIndex >= 0) lastStepIndex - 1 else -1
+                    fetchTranscript(resolvedCid, since = sinceIdx)
+                    startIncrementalPolling(resolvedCid)
                 }
             }
             is InboundMessage.ResponseComplete -> {
+                val resolvedCid = message.conversationId.takeIf { it.isNotBlank() } ?: _uiState.value.conversationId
                 _uiState.update {
-                    it.copy(isGenerating = false)
+                    it.copy(isGenerating = false, conversationId = resolvedCid)
+                }
+                if (!resolvedCid.isNullOrBlank() && resolvedCid != "new") {
+                    fetchTranscript(resolvedCid, since = lastStepIndex)
+                    startIncrementalPolling(resolvedCid)
                 }
             }
             is InboundMessage.ActiveFile -> {
@@ -345,6 +510,10 @@ class ChatViewModel @Inject constructor(
                     }
                 }
                 _uiState.update { it.copy(history = message.conversations) }
+                // Auto-select latest conversation if none active yet
+                if (_uiState.value.conversationId == null && !_uiState.value.isGenerating && message.conversations.isNotEmpty()) {
+                    subscribeConversation(message.conversations.first().id)
+                }
             }
             is InboundMessage.ArtifactsList -> {
                 _uiState.update { it.copy(artifacts = message.artifacts) }
@@ -396,9 +565,9 @@ class ChatViewModel @Inject constructor(
                     }
                     state.copy(error = message.message, steps = newSteps, isGenerating = false)
                 }
-                // Auto-dismiss error after 5 seconds
+                // Auto-dismiss error after 10 seconds
                 viewModelScope.launch {
-                    kotlinx.coroutines.delay(5000)
+                    kotlinx.coroutines.delay(10000)
                     _uiState.update { if (it.error == message.message) it.copy(error = null) else it }
                 }
             }
@@ -441,6 +610,10 @@ class ChatViewModel @Inject constructor(
         _uiState.update { it.copy(selectedImageUri = uri) }
     }
 
+    fun sendPrompt(text: String) {
+        sendMessage(text)
+    }
+
     fun sendMessage(text: String) {
         val activeAgentId = _uiState.value.activeAgentId 
             ?: _uiState.value.availableAgents.firstOrNull()?.id 
@@ -454,12 +627,19 @@ class ChatViewModel @Inject constructor(
         
         val imageUri = _uiState.value.selectedImageUri
         val textToSend = text.ifBlank { "Attached an image." }
+        val targetConversationId = _uiState.value.conversationId ?: "new"
         
         // Optimistically add user step
         _uiState.update { state ->
             val newSteps = state.steps.toMutableList()
             newSteps.add(TrajectoryStep(case = "userInput", value = textToSend))
-            state.copy(steps = newSteps, isGenerating = true, selectedImageUri = null) // Clear selection
+            state.copy(
+                steps = newSteps,
+                conversationId = targetConversationId,
+                isGenerating = true,
+                selectedImageUri = null,
+                error = null
+            )
         }
 
         if (imageUri != null) {
@@ -484,7 +664,12 @@ class ChatViewModel @Inject constructor(
                         val base64 = Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
                         val dataUri = "data:image/jpeg;base64,$base64"
                         
-                        webSocket.sendMessage(OutboundMessage.SendMessage(textToSend, images = listOf(dataUri), agentId = activeAgentId))
+                        webSocket.sendMessage(OutboundMessage.SendMessage(
+                            text = textToSend,
+                            images = listOf(dataUri),
+                            conversationId = targetConversationId,
+                            agentId = activeAgentId
+                        ))
                         
                         if (scaledBitmap != bitmap) {
                             scaledBitmap.recycle()
@@ -503,12 +688,19 @@ class ChatViewModel @Inject constructor(
                 }
             }
         } else {
-            webSocket.sendMessage(OutboundMessage.SendMessage(textToSend, agentId = activeAgentId))
+            webSocket.sendMessage(OutboundMessage.SendMessage(
+                text = textToSend,
+                conversationId = targetConversationId,
+                agentId = activeAgentId
+            ))
         }
     }
 
     fun startNewConversation() {
-        _uiState.update { it.copy(steps = emptyList(), conversationId = null, isGenerating = false) }
+        pollingJob?.cancel()
+        lastStepIndex = -1
+        pendingFullRefresh = false
+        _uiState.update { it.copy(steps = emptyList(), conversationId = "new", isGenerating = false, error = null) }
         val agentId = _uiState.value.activeAgentId ?: "antigravity"
         webSocket.sendMessage(OutboundMessage.NewConversation(agentId = agentId))
         requestHistory() // Refresh history after starting new conversation
@@ -516,6 +708,9 @@ class ChatViewModel @Inject constructor(
 
     fun subscribeConversation(id: String) {
         viewModelScope.launch {
+            lastStepIndex = -1
+            pendingFullRefresh = true
+
             // Instantly load cached steps from Room to support offline viewing
             val cachedSteps = withContext(Dispatchers.IO) {
                 appDao.getStepsForConversation(id)
@@ -529,17 +724,22 @@ class ChatViewModel @Inject constructor(
                 initialSteps.add(entity.toTrajectoryStep())
             }
 
-            _uiState.update { it.copy(steps = initialSteps, conversationId = id, isGenerating = false) }
+            _uiState.update { it.copy(steps = initialSteps, conversationId = id, isGenerating = false, error = null) }
 
-            // Fetch only the new steps to save bandwidth and improve performance
-            webSocket.sendMessage(OutboundMessage.SubscribeConversation(conversationId = id, lastKnownStepCount = initialSteps.size, agentId = _uiState.value.activeAgentId))
+            // Fetch full transcript from server and start incremental polling
+            webSocket.sendMessage(OutboundMessage.SubscribeConversation(
+                conversationId = id,
+                lastKnownStepCount = 0,
+                sinceStepIndex = -1,
+                agentId = _uiState.value.activeAgentId
+            ))
+            startIncrementalPolling(id)
         }
     }
 
     fun requestHistory() {
-        _uiState.value.activeAgentId?.let {
-            webSocket.sendMessage(OutboundMessage.GetHistory(agentId = it))
-        }
+        val agent = _uiState.value.activeAgentId ?: "antigravity"
+        webSocket.sendMessage(OutboundMessage.GetHistory(agentId = agent))
     }
 
     fun requestArtifacts() {

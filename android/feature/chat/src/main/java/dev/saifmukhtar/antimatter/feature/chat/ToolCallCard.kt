@@ -1,3 +1,9 @@
+/*
+ * ToolCallCard.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.chat
 
 import androidx.compose.foundation.background
@@ -69,7 +75,8 @@ fun ToolCallCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Using tool: ${step.tool ?: "run_command"}",
+                        text = step.toolAction?.takeIf { it.isNotBlank() }
+                            ?: "Using tool: ${step.tool ?: "run_command"}",
                         color = androidx.compose.ui.graphics.Color.White,
                         style = MaterialTheme.typography.bodyMedium,
                         fontFamily = FontFamily.Monospace,
@@ -85,7 +92,7 @@ fun ToolCallCard(
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "✔ Success",
+                            text = step.tool ?: "✔ Success",
                             color = androidx.compose.ui.graphics.Color.White,
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
@@ -93,11 +100,20 @@ fun ToolCallCard(
                     }
                 }
 
+                if (!step.toolSummary.isNullOrBlank() && step.toolSummary != step.toolAction) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = step.toolSummary!!,
+                        color = androidx.compose.ui.graphics.Color(0xFF9CA3AF),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+
                 val cmd = step.command ?: step.value
-                if (!cmd.isNullOrBlank()) {
+                if (!cmd.isNullOrBlank() && cmd != step.toolAction && cmd != step.toolSummary) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = if (cmd.startsWith("CommandLine:")) cmd else "CommandLine: $cmd",
+                        text = if (step.tool == "run_command" && !cmd.startsWith("CommandLine:")) "CommandLine: $cmd" else cmd,
                         color = androidx.compose.ui.graphics.Color(0xFFD1D5DB),
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace

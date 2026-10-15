@@ -136,9 +136,9 @@ fun ApprovalCard(
     item: PendingApproval,
     onDecision: (String, String) -> Unit
 ) {
-    var secondsLeft by remember(item.approvalId) {
-        val elapsed = (System.currentTimeMillis() - item.requestedAt) / 1000
-        val remaining = maxOf(0L, item.timeoutSeconds - elapsed)
+    var secondsLeft by remember(item.approvalId, item.remainingSeconds, item.requestedAt) {
+        val nowEpochSeconds = System.currentTimeMillis() / 1000L
+        val remaining = item.computeSecondsLeft(nowEpochSeconds)
         mutableStateOf(remaining)
     }
 

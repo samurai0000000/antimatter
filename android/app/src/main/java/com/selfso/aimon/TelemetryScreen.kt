@@ -83,9 +83,9 @@ fun TelemetryScreen(
             }
         }
 
-        // 1. Meshmon
+        // 0. Agent Telemetry Overview (/api/telemetry/overview)
         item {
-            val mesh = satelliteStatus.meshmon
+            val overview = satelliteStatus.overview
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -99,12 +99,12 @@ fun TelemetryScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "meshmon (LoRa Mesh)",
+                            text = "Agent Telemetry Overview",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
-                        StatusDot(online = mesh.online)
+                        StatusDot(online = overview.totalSessions > 0 || overview.totalEvents > 0)
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
@@ -114,150 +114,147 @@ fun TelemetryScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("Channel:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("915 MHz", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
+                            Text("Sessions:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
+                            Text("${overview.totalSessions} (${overview.activeSessions} active)", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
                         }
                         Column {
-                            Text("Nodes:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("${if (mesh.activeNodes > 0) mesh.activeNodes else 6} Active", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
+                            Text("Tool Calls:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
+                            Text("${overview.totalToolCalls}", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
                         }
                         Column {
-                            Text("Packets:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("1,420 pkts/min", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
+                            Text("Events:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
+                            Text("${overview.totalEvents}", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
                         }
+                    }
+                    if (overview.platforms.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        val platformsSummary = overview.platforms.joinToString(" • ")
+                        Text(
+                            text = "Platforms: $platformsSummary",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF9CA3AF)
+                        )
                     }
                 }
             }
+        }
+
+        // 1. Meshmon
+        item {
+            val mesh = satelliteStatus.meshmon
+            MonitorNodeCard(
+                title = "meshmon (LoRa Mesh)",
+                online = mesh.online,
+                endpoint = mesh.endpoint,
+                lastSeenEpoch = mesh.lastSeenEpoch,
+                extraLabel = "Active Nodes:",
+                extraValue = if (mesh.online) "${mesh.activeNodes}" else "Offline"
+            )
         }
 
         // 2. Netmon
         item {
             val net = satelliteStatus.netmon
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF27272A)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141419))
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "netmon (LAN Sniffer)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        StatusDot(online = net.online)
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("Capture:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("96B snaplen", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        }
-                        Column {
-                            Text("Top Talkers:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("${if (net.activeSessions > 0) net.activeSessions else 12} nodes", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        }
-                        Column {
-                            Text("LAN Rate:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("14.2 MB/s", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        }
-                    }
-                }
-            }
+            MonitorNodeCard(
+                title = "netmon (LAN Monitor)",
+                online = net.online,
+                endpoint = net.endpoint,
+                lastSeenEpoch = net.lastSeenEpoch,
+                extraLabel = "Sessions:",
+                extraValue = if (net.online) "${net.activeSessions}" else "Offline"
+            )
         }
 
         // 3. Embdevenv
         item {
             val emb = satelliteStatus.embdevenv
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF27272A)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141419))
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "embdevenv (Hardware Lab)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        StatusDot(online = emb.online)
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("MCU Power:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text(if (emb.mcuPower) "3.3V / 42mA" else "3.3V / 42mA", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        }
-                        Column {
-                            Text("Active Target:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text(emb.target.ifEmpty { "STM32F4" }, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        }
-                    }
-                }
-            }
+            MonitorNodeCard(
+                title = "embdevenv (Hardware Lab)",
+                online = emb.online,
+                endpoint = emb.endpoint,
+                lastSeenEpoch = emb.lastSeenEpoch,
+                extraLabel = "Target:",
+                extraValue = if (emb.online) emb.target.ifEmpty { "Online" } else "Offline"
+            )
         }
 
-        // 4. SNMP Gateway
+        // 4. ABC-80
         item {
-            Card(
+            val abc = satelliteStatus.abc80
+            MonitorNodeCard(
+                title = "abc80 (Microcomputer)",
+                online = abc.online,
+                endpoint = abc.endpoint,
+                lastSeenEpoch = abc.lastSeenEpoch,
+                extraLabel = "Status:",
+                extraValue = if (abc.online) abc.statusText.ifEmpty { "Online" } else "Offline"
+            )
+        }
+    }
+}
+
+@Composable
+private fun MonitorNodeCard(
+    title: String,
+    online: Boolean,
+    endpoint: String,
+    lastSeenEpoch: Long,
+    extraLabel: String,
+    extraValue: String
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF27272A)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF141419))
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF27272A)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141419))
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "snmp (Gateway Router)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        StatusDot(online = true)
-                    }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                StatusDot(online = online)
+            }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("WAN:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("850 Mbps", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        }
-                        Column {
-                            Text("Latency:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
-                            Text("4ms", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        }
-                    }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text("Endpoint:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
+                    Text(
+                        text = if (online) endpoint.ifBlank { "Online" } else "Offline",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 15.sp
+                    )
+                }
+                Column {
+                    Text("Last Seen:", style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
+                    Text(
+                        text = if (online && lastSeenEpoch > 0L) "${lastSeenEpoch}s" else "N/A",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 15.sp
+                    )
+                }
+                Column {
+                    Text(extraLabel, style = MaterialTheme.typography.bodySmall, color = Color(0xFF9CA3AF))
+                    Text(
+                        text = extraValue,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 15.sp
+                    )
                 }
             }
         }

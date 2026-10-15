@@ -1,3 +1,9 @@
+/*
+ * AntimatterNavigation.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.navigation
 
 import android.content.Intent
@@ -53,6 +59,7 @@ fun AntimatterNavigation(
     val quotaStatus by aimonViewModel.quotaStatus.collectAsState()
     val pendingApprovals by aimonViewModel.pendingApprovals.collectAsState()
     val satelliteStatus by aimonViewModel.satelliteStatus.collectAsState()
+    val mobileToken by aimonViewModel.mobileToken.collectAsState()
     
     var currentTab by remember { mutableStateOf(2) }
     var isScanningQR by remember { mutableStateOf(false) }
@@ -65,6 +72,7 @@ fun AntimatterNavigation(
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {
+        aimonViewModel.initPreferences(context)
         if (LocalCrashHandler.hasUnsentLogs(context)) {
             showCrashDialog = true
         }
@@ -72,10 +80,34 @@ fun AntimatterNavigation(
 
     LaunchedEffect(intent) {
         intent?.data?.let { uri ->
+            val isAimonPair = (uri.scheme == "aimon" && uri.host == "pair") ||
+                              (uri.scheme == "aimon" && uri.path == "/pair")
             val isLegacy = uri.scheme == "antimatter" && uri.host == "connect"
             val isSecure = uri.scheme == "https" && uri.host == "antimatter.saifmukhtar.dev" && uri.path?.startsWith("/connect") == true
             
-            if (isLegacy || isSecure) {
+            if (isAimonPair) {
+                val host = uri.getQueryParameter("host") ?: "127.0.0.1"
+                val port = uri.getQueryParameter("port")?.toIntOrNull() ?: 3883
+                val secret = uri.getQueryParameter("secret") ?: ""
+                val url = "http://$host:$port"
+                aimonViewModel.pairWithServer(host, port, secret) { success, grantedToken, errMsg ->
+                    if (success && !grantedToken.isNullOrBlank()) {
+                        aimonViewModel.configureEndpoint(url, grantedToken)
+                        chatViewModel.configureEndpoint(url, grantedToken)
+                        filesViewModel.configureEndpoint(url, grantedToken)
+                        connectionViewModel.connectNamedProfile("aimon", url, null, null, grantedToken, null)
+                        try {
+                            context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
+                        } catch (_: Exception) {}
+                    } else {
+                        android.widget.Toast.makeText(
+                            context,
+                            errMsg ?: "Pairing failed",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            } else if (isLegacy || isSecure) {
                 val url = uri.getQueryParameter("url")
                 val token = uri.getQueryParameter("token")
                 val pubKey = uri.getQueryParameter("pubkey")
@@ -131,7 +163,12 @@ fun AntimatterNavigation(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    connectionViewModel.connectManually(pendingDeepLinkUrl!!, null, null, pendingDeepLinkToken, pendingDeepLinkPubKey)
+                    val targetUrl = pendingDeepLinkUrl!!
+                    val targetToken = pendingDeepLinkToken ?: ""
+                    aimonViewModel.configureEndpoint(targetUrl, targetToken)
+                    chatViewModel.configureEndpoint(targetUrl, targetToken)
+                    filesViewModel.configureEndpoint(targetUrl, targetToken)
+                    connectionViewModel.connectManually(targetUrl, null, null, pendingDeepLinkToken, pendingDeepLinkPubKey)
                     pendingDeepLinkUrl = null
                     pendingDeepLinkToken = null
                     pendingDeepLinkPubKey = null
@@ -171,12 +208,14 @@ fun AntimatterNavigation(
                 TextButton(
                     onClick = {
                         val data = scannedProfileData!!
-                        // We need a new method in ConnectionViewModel to save a NAMED profile
-                        // We will add `saveProfileAndConnect` next. For now, use connectManually but it doesn't take a name.
-                        // Wait, we need to add `connectNamedProfile` to ConnectionViewModel.
+                        val url = data["url"] ?: ""
+                        val token = data["token"] ?: ""
+                        aimonViewModel.configureEndpoint(url, token)
+                        chatViewModel.configureEndpoint(url, token)
+                        filesViewModel.configureEndpoint(url, token)
                         connectionViewModel.connectNamedProfile(
                             profileName.ifBlank { "Gateway Connection" },
-                            data["url"] ?: "",
+                            url,
                             data["cfId"],
                             data["cfSecret"],
                             data["token"],
@@ -204,7 +243,9 @@ fun AntimatterNavigation(
             onQRScanned = { url, token, cfId, cfSecret, pubKey ->
                 isScanningQR = false
                 currentTab = 2
-                aimonViewModel.configureEndpoint(url)
+                aimonViewModel.configureEndpoint(url, token)
+                chatViewModel.configureEndpoint(url, token)
+                filesViewModel.configureEndpoint(url, token)
                 connectionViewModel.connectNamedProfile(
                     "aimon",
                     url,
@@ -213,8 +254,14 @@ fun AntimatterNavigation(
                     token,
                     pubKey
                 )
+                try {
+                    context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
+                } catch (_: Exception) {}
             },
-            onNavigateBack = { isScanningQR = false }
+            onNavigateBack = { isScanningQR = false },
+            onPairAimon = { host, port, secret, onResult ->
+                aimonViewModel.pairWithServer(host, port, secret, onResult = onResult)
+            }
         )
     } else if (!savedUrl.isNullOrEmpty()) {
         if (filesUiState.viewedFilePath != null) {
@@ -227,9 +274,15 @@ fun AntimatterNavigation(
                 onSave = { path, content -> filesViewModel.writeFile(path, content) }
             )
         } else {
-            LaunchedEffect(savedUrl) {
+            LaunchedEffect(savedUrl, mobileToken, savedCredentials.token) {
                 if (!savedUrl.isNullOrEmpty()) {
-                    aimonViewModel.configureEndpoint(savedUrl)
+                    val effectiveToken = mobileToken.ifBlank { savedCredentials.token ?: "" }
+                    aimonViewModel.configureEndpoint(savedUrl, effectiveToken)
+                    chatViewModel.configureEndpoint(savedUrl, effectiveToken)
+                    filesViewModel.configureEndpoint(savedUrl, effectiveToken)
+                    try {
+                        context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
+                    } catch (_: Exception) {}
                 }
             }
             BackHandler(enabled = currentTab != 2) {
@@ -414,7 +467,37 @@ fun AntimatterNavigation(
             savedClientSecret = savedCredentials.clientSecret,
             profiles = profiles,
             onConnectClick = { url, clientId, clientSecret, token ->
-                connectionViewModel.connectManually(url, clientId, clientSecret, token)
+                if (!token.isNullOrBlank() && token.length <= 16) {
+                    val parsedUri = try { android.net.Uri.parse(url) } catch (_: Exception) { null }
+                    val host = parsedUri?.host ?: "127.0.0.1"
+                    val port = if (parsedUri != null && parsedUri.port > 0) parsedUri.port else 3883
+                    aimonViewModel.pairWithServer(host, port, token) { success, grantedToken, errMsg ->
+                        if (success && !grantedToken.isNullOrBlank()) {
+                            aimonViewModel.configureEndpoint(url, grantedToken)
+                            chatViewModel.configureEndpoint(url, grantedToken)
+                            filesViewModel.configureEndpoint(url, grantedToken)
+                            connectionViewModel.connectManually(url, clientId, clientSecret, grantedToken)
+                            try {
+                                context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
+                            } catch (_: Exception) {}
+                        } else {
+                            android.widget.Toast.makeText(
+                                context,
+                                errMsg ?: "Pairing failed",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                } else {
+                    val effectiveToken = token ?: mobileToken
+                    aimonViewModel.configureEndpoint(url, effectiveToken)
+                    chatViewModel.configureEndpoint(url, effectiveToken)
+                    filesViewModel.configureEndpoint(url, effectiveToken)
+                    connectionViewModel.connectManually(url, clientId, clientSecret, effectiveToken.ifBlank { null })
+                    try {
+                        context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
+                    } catch (_: Exception) {}
+                }
             },
             onScanQRClick = { isScanningQR = true },
             onProfileSelected = { id -> connectionViewModel.switchProfile(id) },
@@ -422,3 +505,4 @@ fun AntimatterNavigation(
         )
     }
 }
+

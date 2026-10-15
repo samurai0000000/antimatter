@@ -1,3 +1,9 @@
+/*
+ * ChatScreen.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.chat
 
 import androidx.compose.foundation.layout.*
@@ -86,7 +92,8 @@ fun groupSteps(steps: List<TrajectoryStep>): List<ChatItem> {
             StepCase.TEXT,
             StepCase.MARKDOWN_CHUNK,
             StepCase.TOOL_CALL,
-            StepCase.PLANNER_RESPONSE
+            StepCase.PLANNER_RESPONSE,
+            StepCase.ERROR_MESSAGE
         )
     }
 
@@ -98,7 +105,8 @@ fun groupSteps(steps: List<TrajectoryStep>): List<ChatItem> {
         val step = visibleSteps[i]
         if (step.stepCase == StepCase.PLANNER_RESPONSE) {
             if (currentGroup.isEmpty()) groupStartIndex = i
-            val cleanedText = cleanThoughtText(step.value)
+            val rawThought = step.thinking ?: step.value
+            val cleanedText = cleanThoughtText(rawThought)
             if (!cleanedText.isNullOrBlank()) {
                 currentGroup.add(step.copy(value = cleanedText))
             }
@@ -415,8 +423,9 @@ fun ChatScreen(
                         .collect { index ->
                             // Calculate step index from reversed grouped list index
                             val reversedItems = groupedItems.reversed()
-                            if (index in reversedItems.indices) {
-                                val item = reversedItems[index]
+                            val itemIdx = if (uiState.isGenerating) index - 1 else index
+                            if (itemIdx in reversedItems.indices) {
+                                val item = reversedItems[itemIdx]
                                 if (item is ChatItem.SingleStep) {
                                     onStepVisible(uiState.steps.indexOf(item.step))
                                 } else if (item is ChatItem.ThoughtGroup) {
@@ -434,6 +443,12 @@ fun ChatScreen(
                     contentPadding = PaddingValues(vertical = 16.dp),
                     reverseLayout = true
                 ) {
+                    if (uiState.isGenerating) {
+                        item(key = "typing_indicator") {
+                            TypingIndicator()
+                        }
+                    }
+
                     val reversedItems = groupedItems.reversed()
                     itemsIndexed(
                         items = reversedItems,
@@ -448,7 +463,7 @@ fun ChatScreen(
                             is ChatItem.SingleStep -> {
                                 val step = item.step
                                 when (step.stepCase) {
-                                    StepCase.USER_INPUT, StepCase.TEXT, StepCase.MARKDOWN_CHUNK -> {
+                                    StepCase.USER_INPUT, StepCase.TEXT, StepCase.MARKDOWN_CHUNK, StepCase.ERROR_MESSAGE -> {
                                         ChatBubble(
                                             step = step,
                                             onLinkClicked = { link ->
@@ -473,12 +488,6 @@ fun ChatScreen(
                                 val isLatest = uiState.isGenerating && item === reversedItems.first()
                                 ThoughtGroupBubble(steps = item.steps, isLatest = isLatest)
                             }
-                        }
-                    }
-                    
-                    if (uiState.isGenerating) {
-                        item {
-                            TypingIndicator()
                         }
                     }
                 } // End of LazyColumn

@@ -1,3 +1,9 @@
+/*
+ * BridgeWebSocket.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.core.network
 
 import android.content.Context
@@ -106,13 +112,28 @@ class BridgeWebSocket(private val context: Context) {
     fun connect(url: String, clientId: String? = null, clientSecret: String? = null, token: String? = null, pubKey: String? = null) {
         manuallyDisconnected = false
         reconnectAttempt = 0
-        currentUrl = url
+        currentUrl = if (url.endsWith("/")) url.dropLast(1) else url
         this.token = token?.takeIf { it.isNotBlank() }
         this.clientId = clientId?.takeIf { it.isNotBlank() }
         this.clientSecret = clientSecret?.takeIf { it.isNotBlank() }?.toByteArray()
         this.pubKey = pubKey?.takeIf { it.isNotBlank() }
         connectInternal()
     }
+
+    fun configureEndpoint(url: String, authToken: String = "") {
+        currentUrl = if (url.endsWith("/")) url.dropLast(1) else url
+        if (authToken.isNotBlank()) {
+            this.token = authToken
+            if (_connectionState.value == ConnectionState.DISCONNECTED && !isConnecting.get()) {
+                manuallyDisconnected = false
+                connectInternal()
+            }
+        }
+    }
+
+    fun getCurrentUrl(): String? = currentUrl
+
+    fun getAuthToken(): String? = token
 
     fun disconnect() {
         manuallyDisconnected = true
@@ -141,7 +162,7 @@ class BridgeWebSocket(private val context: Context) {
                         .header("User-Agent", "aimon-mobile/1.0")
                         .get()
 
-                    if (token != null) {
+                    if (!token.isNullOrBlank()) {
                         requestBuilder.header("X-Mobile-Token", token!!)
                         requestBuilder.header("Authorization", "Bearer $token")
                     }
@@ -158,13 +179,13 @@ class BridgeWebSocket(private val context: Context) {
                         val agentsMsg = gson.fromJson(body, InboundMessage.AvailableAgents::class.java)
                         _messages.emit(agentsMsg)
 
-                        // Also fetch history
+                        // Also fetch conversations / history
                         try {
                             val histReq = Request.Builder()
-                                .url("$targetUrl/api/agent/history")
+                                .url("$targetUrl/api/agent/conversations")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -201,7 +222,8 @@ class BridgeWebSocket(private val context: Context) {
                 .url(currentUrl!!)
                 .header("Bypass-Tunnel-Reminder", "true")
                 
-            if (token != null) {
+            if (!token.isNullOrBlank()) {
+                requestBuilder.header("X-Mobile-Token", token!!)
                 requestBuilder.header("Authorization", "Bearer $token")
             }
                 
@@ -416,8 +438,11 @@ class BridgeWebSocket(private val context: Context) {
                     val url = currentUrl ?: return@launch
                     when (message) {
                         is OutboundMessage.SendMessage -> {
+                            val reqCid = message.conversationId?.takeIf { it.isNotBlank() } ?: "new"
                             val reqBody = gson.toJson(mapOf(
                                 "text" to message.text,
+                                "prompt" to message.text,
+                                "conversationId" to reqCid,
                                 "agentId" to (message.agentId ?: "antigravity"),
                                 "images" to (message.images ?: emptyList<String>())
                             ))
@@ -425,7 +450,7 @@ class BridgeWebSocket(private val context: Context) {
                                 .url("$url/api/agent/prompt")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -439,37 +464,32 @@ class BridgeWebSocket(private val context: Context) {
 
                                 try {
                                     val json = JsonParser.parseString(body).asJsonObject
-                                    val cid = if (json.has("conversationId")) json.get("conversationId").asString else ""
-                                    if (json.has("steps")) {
-                                        val arr = json.getAsJsonArray("steps")
-                                        arr.forEach { elem ->
-                                            val stepObj = elem.asJsonObject
-                                            val caseType = if (stepObj.has("case")) stepObj.get("case").asString else "text"
-                                            val value = if (stepObj.has("value")) stepObj.get("value").asString else ""
-                                            val tool = if (stepObj.has("tool")) stepObj.get("tool").asString else null
-                                            val cmd = if (stepObj.has("command")) stepObj.get("command").asString else null
-                                            _messages.emit(InboundMessage.Step(
-                                                step = TrajectoryStep(case = caseType, value = value, tool = tool, command = cmd),
-                                                index = -1,
-                                                agentId = message.agentId ?: "antigravity"
+                                    val cid = json.get("conversationId")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                    if (cid.isNotBlank() && cid != "new") {
+                                        _messages.emit(InboundMessage.Generating(
+                                            conversationId = cid,
+                                            agentId = message.agentId ?: "antigravity"
+                                        ))
+                                    }
+                                    if (json.has("steps") && json.get("steps").isJsonArray) {
+                                        val parsedSteps = parseTranscriptStepsFromJson(json, message.agentId ?: "antigravity")
+                                        if (parsedSteps.isNotEmpty()) {
+                                            _messages.emit(InboundMessage.StepBatch(
+                                                steps = parsedSteps,
+                                                agentId = message.agentId ?: "antigravity",
+                                                conversationId = cid.ifBlank { null }
                                             ))
                                         }
-                                    } else if (json.has("response")) {
+                                        _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                    } else if (json.has("response") && json.get("response").isJsonPrimitive) {
                                         val respText = json.get("response").asString
                                         _messages.emit(InboundMessage.Step(
                                             step = TrajectoryStep(case = "text", value = respText),
                                             index = -1,
                                             agentId = message.agentId ?: "antigravity"
                                         ))
-                                    } else {
-                                        _messages.emit(InboundMessage.Step(
-                                            step = TrajectoryStep(case = "text", value = "Received: ${message.text}"),
-                                            index = -1,
-                                            agentId = message.agentId ?: "antigravity"
-                                        ))
+                                        _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
                                     }
-                                    // Complete response and clear isGenerating
-                                    _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
                                 } catch (e: Exception) {
                                     Log.e("BridgeWebSocket", "Error parsing prompt response", e)
                                     _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId ?: "antigravity"))
@@ -478,10 +498,10 @@ class BridgeWebSocket(private val context: Context) {
                                 // Refresh history list
                                 try {
                                     val histReq = Request.Builder()
-                                        .url("$url/api/agent/history")
+                                        .url("$url/api/agent/conversations")
                                         .header("User-Agent", "aimon-mobile/1.0")
                                         .apply {
-                                            if (token != null) {
+                                            if (!token.isNullOrBlank()) {
                                                 header("X-Mobile-Token", token!!)
                                                 header("Authorization", "Bearer $token")
                                             }
@@ -498,8 +518,19 @@ class BridgeWebSocket(private val context: Context) {
                                     Log.w("BridgeWebSocket", "Failed to refresh history after send", e)
                                 }
                             } else {
-                                _messages.emit(InboundMessage.Error("Failed to send prompt: HTTP ${resp.code}"))
-                                _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId))
+                                val errDetail = try {
+                                    val errJson = JsonParser.parseString(body).asJsonObject
+                                    errJson.get("error")?.takeIf { !it.isJsonNull }?.asString
+                                } catch (_: Exception) {
+                                    null
+                                }
+                                val errMsg = if (!errDetail.isNullOrBlank()) {
+                                    errDetail
+                                } else {
+                                    "Failed to send prompt: HTTP ${resp.code}"
+                                }
+                                _messages.emit(InboundMessage.Error(errMsg, agentId = message.agentId))
+                                _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId ?: "antigravity"))
                             }
                         }
                         is OutboundMessage.ListAgents -> {
@@ -507,7 +538,7 @@ class BridgeWebSocket(private val context: Context) {
                                 .url("$url/api/agent/available")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -523,10 +554,10 @@ class BridgeWebSocket(private val context: Context) {
                         }
                         is OutboundMessage.GetHistory -> {
                             val req = Request.Builder()
-                                .url("$url/api/agent/history")
+                                .url("$url/api/agent/conversations")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -541,11 +572,16 @@ class BridgeWebSocket(private val context: Context) {
                             }
                         }
                         is OutboundMessage.SubscribeConversation -> {
+                            val sinceParam = if (message.sinceStepIndex != null && message.sinceStepIndex >= 0) {
+                                "&since=${message.sinceStepIndex}"
+                            } else {
+                                ""
+                            }
                             val req = Request.Builder()
-                                .url("$url/api/agent/transcript?id=${message.conversationId}")
+                                .url("$url/api/agent/transcript?id=${message.conversationId}$sinceParam")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -556,27 +592,38 @@ class BridgeWebSocket(private val context: Context) {
                             val body = resp.body?.string() ?: ""
                             if (resp.isSuccessful) {
                                 val json = JsonParser.parseString(body).asJsonObject
-                                val cid = if (json.has("conversationId")) json.get("conversationId").asString else message.conversationId
-                                val model = if (json.has("model")) json.get("model").asString else "gemini-2.5-pro"
-                                val stepCount = if (json.has("stepCount")) json.get("stepCount").asInt else 0
-                                val steps = if (json.has("steps")) {
-                                    val arr = json.getAsJsonArray("steps")
-                                    arr.map { elem ->
-                                        gson.fromJson(elem, InboundMessage.Step::class.java)
-                                    }
-                                } else emptyList()
+                                val cid = if (json.has("conversationId") && !json.get("conversationId").isJsonNull) {
+                                    json.get("conversationId").asString
+                                } else {
+                                    message.conversationId
+                                }
+                                val model = if (json.has("model") && !json.get("model").isJsonNull) {
+                                    json.get("model").asString
+                                } else {
+                                    "gemini-2.5-pro"
+                                }
+                                val stepCount = if (json.has("stepCount") && !json.get("stepCount").isJsonNull) {
+                                    json.get("stepCount").asInt
+                                } else {
+                                    0
+                                }
+                                val steps = parseTranscriptStepsFromJson(json, message.agentId)
 
-                                _messages.emit(InboundMessage.SessionState(
-                                    conversationId = cid,
-                                    model = model,
-                                    stepCount = stepCount,
-                                    agentId = message.agentId
-                                ))
-                                _messages.emit(InboundMessage.StepBatch(
-                                    steps = steps,
-                                    agentId = message.agentId,
-                                    conversationId = cid
-                                ))
+                                if (message.lastKnownStepCount == 0 && (message.sinceStepIndex == null || message.sinceStepIndex < 0)) {
+                                    _messages.emit(InboundMessage.SessionState(
+                                        conversationId = cid,
+                                        model = model,
+                                        stepCount = stepCount,
+                                        agentId = message.agentId
+                                    ))
+                                }
+                                if (steps.isNotEmpty() || message.sinceStepIndex == null || message.sinceStepIndex < 0) {
+                                    _messages.emit(InboundMessage.StepBatch(
+                                        steps = steps,
+                                        agentId = message.agentId,
+                                        conversationId = cid
+                                    ))
+                                }
                             }
                         }
                         is OutboundMessage.GetArtifacts -> {
@@ -584,7 +631,7 @@ class BridgeWebSocket(private val context: Context) {
                                 .url("$url/api/agent/artifacts?id=${message.conversationId}")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -603,7 +650,7 @@ class BridgeWebSocket(private val context: Context) {
                                 .url("$url/api/workspace/file?path=${message.path}")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -614,8 +661,8 @@ class BridgeWebSocket(private val context: Context) {
                             val body = resp.body?.string() ?: ""
                             if (resp.isSuccessful) {
                                 val json = JsonParser.parseString(body).asJsonObject
-                                val content = if (json.has("content")) json.get("content").asString else ""
-                                val lang = if (json.has("language")) json.get("language").asString else ""
+                                val content = optJsonString(json, "content") ?: ""
+                                val lang = optJsonString(json, "language") ?: ""
                                 _messages.emit(InboundMessage.ArtifactContent(
                                     path = message.path,
                                     content = content,
@@ -625,11 +672,12 @@ class BridgeWebSocket(private val context: Context) {
                             }
                         }
                         is OutboundMessage.GetFiles -> {
+                            val pathQuery = if (!message.path.isNullOrBlank()) "?path=${java.net.URLEncoder.encode(message.path, "UTF-8")}" else ""
                             val req = Request.Builder()
-                                .url("$url/api/workspace/tree")
+                                .url("$url/api/workspace/tree$pathQuery")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -645,10 +693,10 @@ class BridgeWebSocket(private val context: Context) {
                         }
                         is OutboundMessage.ReadFile -> {
                             val req = Request.Builder()
-                                .url("$url/api/workspace/file?path=${message.path}")
+                                .url("$url/api/workspace/file?path=${java.net.URLEncoder.encode(message.path, "UTF-8")}")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -671,7 +719,7 @@ class BridgeWebSocket(private val context: Context) {
                                 .url("$url/api/workspace/file")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
-                                    if (token != null) {
+                                    if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
                                         header("Authorization", "Bearer $token")
                                     }
@@ -684,9 +732,8 @@ class BridgeWebSocket(private val context: Context) {
                             }
                         }
                         is OutboundMessage.NewConversation -> {
-                            val newCid = UUID.randomUUID().toString()
                             _messages.emit(InboundMessage.SessionState(
-                                conversationId = newCid,
+                                conversationId = "new",
                                 model = "gemini-2.5-pro",
                                 stepCount = 0,
                                 agentId = message.agentId
@@ -791,4 +838,183 @@ class BridgeWebSocket(private val context: Context) {
 
         notificationManager.notify(notificationIdCounter.incrementAndGet(), notification)
     }
+
+    private fun optJsonString(obj: com.google.gson.JsonObject?, key: String): String? {
+        if (obj == null || !obj.has(key)) return null
+        val el = obj.get(key)
+        if (el == null || el.isJsonNull) return null
+        return if (el.isJsonPrimitive) el.asString else el.toString()
+    }
+
+    private fun optJsonInt(obj: com.google.gson.JsonObject?, key: String): Int? {
+        if (obj == null || !obj.has(key)) return null
+        val el = obj.get(key)
+        if (el == null || el.isJsonNull || !el.isJsonPrimitive) return null
+        return try {
+            el.asInt
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseTranscriptStepsFromJson(
+        json: com.google.gson.JsonObject,
+        agentId: String?
+    ): List<InboundMessage.Step> {
+        val result = mutableListOf<InboundMessage.Step>()
+        if (!json.has("steps") || !json.get("steps").isJsonArray) {
+            return result
+        }
+        val stepsArr = json.getAsJsonArray("steps")
+        for (elem in stepsArr) {
+            if (!elem.isJsonObject) continue
+            val elemObj = elem.asJsonObject
+            val rawStepIdx = optJsonInt(elemObj, "stepIndex")
+                ?: optJsonInt(elemObj, "index")
+                ?: -1
+            val typeStr = optJsonString(elemObj, "type") ?: ""
+            val stepObj = if (elemObj.has("step") && elemObj.get("step").isJsonObject) {
+                elemObj.getAsJsonObject("step")
+            } else {
+                null
+            }
+            val caseVal = optJsonString(stepObj, "case") ?: ""
+
+            if (typeStr == "USER_INPUT" || caseVal == "userInput") {
+                val valStr = optJsonString(elemObj, "text")
+                    ?: optJsonString(stepObj, "value")
+                    ?: ""
+                if (valStr.isNotBlank()) {
+                    result.add(
+                        InboundMessage.Step(
+                            index = -1,
+                            step = TrajectoryStep(
+                                case = "userInput",
+                                value = valStr,
+                                stepIndex = rawStepIdx
+                            ),
+                            agentId = agentId
+                        )
+                    )
+                }
+            } else if (
+                typeStr == "PLANNER_RESPONSE" ||
+                typeStr == "TOOL_CALL" ||
+                elemObj.has("thinking") ||
+                elemObj.has("plannerResponse") ||
+                elemObj.has("tool_calls")
+            ) {
+                val thinkingStr = optJsonString(elemObj, "thinking")
+                    ?: optJsonString(elemObj, "plannerResponse")
+                    ?: (if (caseVal == "plannerResponse") optJsonString(stepObj, "value") else null)
+
+                if (!thinkingStr.isNullOrBlank()) {
+                    result.add(
+                        InboundMessage.Step(
+                            index = -1,
+                            step = TrajectoryStep(
+                                case = "plannerResponse",
+                                value = thinkingStr,
+                                thinking = thinkingStr,
+                                stepIndex = rawStepIdx
+                            ),
+                            agentId = agentId
+                        )
+                    )
+                }
+
+                if (elemObj.has("tool_calls") && elemObj.get("tool_calls").isJsonArray) {
+                    val tcArr = elemObj.getAsJsonArray("tool_calls")
+                    for (tcElem in tcArr) {
+                        if (!tcElem.isJsonObject) continue
+                        val tcObj = tcElem.asJsonObject
+                        val name = optJsonString(tcObj, "name") ?: "tool"
+                        val tAction = optJsonString(tcObj, "toolAction")
+                        val tSummary = optJsonString(tcObj, "toolSummary")
+                        val cmd = optJsonString(tcObj, "command")
+                        val args = optJsonString(tcObj, "arguments")
+                        val displayCmd = cmd?.takeIf { it.isNotBlank() }
+                            ?: tAction?.takeIf { it.isNotBlank() }
+                            ?: tSummary?.takeIf { it.isNotBlank() }
+                            ?: args?.takeIf { it.isNotBlank() }
+                            ?: name
+                        result.add(
+                            InboundMessage.Step(
+                                index = -1,
+                                step = TrajectoryStep(
+                                    case = "toolCall",
+                                    value = args ?: displayCmd,
+                                    tool = name,
+                                    command = displayCmd,
+                                    toolAction = tAction,
+                                    toolSummary = tSummary,
+                                    stepIndex = rawStepIdx
+                                ),
+                                agentId = agentId
+                            )
+                        )
+                    }
+                } else if (caseVal == "toolCall") {
+                    val toolName = optJsonString(stepObj, "tool") ?: "tool"
+                    val cmd = optJsonString(stepObj, "command")
+                    val valStr = optJsonString(stepObj, "value")
+                    result.add(
+                        InboundMessage.Step(
+                            index = -1,
+                            step = TrajectoryStep(
+                                case = "toolCall",
+                                value = valStr,
+                                tool = toolName,
+                                command = cmd,
+                                stepIndex = rawStepIdx
+                            ),
+                            agentId = agentId
+                        )
+                    )
+                }
+
+                val textStr = optJsonString(elemObj, "text")
+                    ?: (if (caseVal == "text" || caseVal == "markdownChunk") optJsonString(stepObj, "value") else null)
+                if (!textStr.isNullOrBlank()) {
+                    result.add(
+                        InboundMessage.Step(
+                            index = -1,
+                            step = TrajectoryStep(
+                                case = "text",
+                                value = textStr,
+                                stepIndex = rawStepIdx
+                            ),
+                            agentId = agentId
+                        )
+                    )
+                }
+            } else if (typeStr == "ERROR_MESSAGE" || caseVal == "errorMessage") {
+                val errStr = optJsonString(elemObj, "text")
+                    ?: optJsonString(stepObj, "value")
+                    ?: "Agent execution error"
+                result.add(
+                    InboundMessage.Step(
+                        index = -1,
+                        step = TrajectoryStep(
+                            case = "errorMessage",
+                            value = errStr,
+                            stepIndex = rawStepIdx
+                        ),
+                        agentId = agentId
+                    )
+                )
+            } else if (stepObj != null) {
+                val parsedStep = gson.fromJson(stepObj, TrajectoryStep::class.java).copy(stepIndex = rawStepIdx)
+                result.add(
+                    InboundMessage.Step(
+                        index = -1,
+                        step = parsedStep,
+                        agentId = agentId
+                    )
+                )
+            }
+        }
+        return result
+    }
 }
+

@@ -1,3 +1,9 @@
+/*
+ * FilesViewModel.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.files
 
 import androidx.lifecycle.ViewModel
@@ -33,6 +39,20 @@ class FilesViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(FilesUiState())
     val uiState: StateFlow<FilesUiState> = _uiState.asStateFlow()
+
+    private var baseUrl: String = "http://127.0.0.1:3883"
+    private var token: String = ""
+
+    fun configureEndpoint(url: String, authToken: String = "") {
+        baseUrl = url.trimEnd('/')
+        token = authToken
+        webSocket.configureEndpoint(baseUrl, authToken)
+        fetchTree(null)
+    }
+
+    fun fetchTree(path: String? = null) {
+        loadFileTree(path)
+    }
 
     init {
         // Fetch current workspace and file tree when connected

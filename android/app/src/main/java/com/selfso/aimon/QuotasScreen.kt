@@ -9,21 +9,38 @@ package com.selfso.aimon
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.text.NumberFormat
+import java.util.Locale
+import kotlin.math.roundToInt
+
+fun computeAntigravitySweepAngle(ag: AntigravityQuota?): Float {
+    if (ag == null || !ag.isRunning) return 0f
+    val avgRemainingPct = when {
+        ag.quotaGroups.isNotEmpty() -> ag.quotaGroups.map { it.remainingPct }.average()
+        ag.models.isNotEmpty() -> ag.models.map { it.remainingPct }.average()
+        else -> 0.0
+    }
+    return (avgRemainingPct.coerceIn(0.0, 100.0).toFloat() / 100f) * 360f
+}
 
 @Composable
 fun QuotasScreen(
@@ -47,6 +64,8 @@ fun QuotasScreen(
         }
         return
     }
+
+    val numberFormat = NumberFormat.getNumberInstance(Locale.US)
 
     LazyColumn(
         modifier = Modifier
@@ -89,174 +108,260 @@ fun QuotasScreen(
             }
         }
 
-        // Google Antigravity Section
-        quotaStatus.antigravity?.let { ag ->
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        androidx.compose.ui.graphics.Brush.horizontalGradient(
-                            listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
-                        )
-                    ),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
-                ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = Color(0xFF00CEC9),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
+        // 1. Google Antigravity Section
+        item {
+            val ag = quotaStatus.antigravity
+            val avgRemainingPct = if (ag != null && ag.isRunning) {
+                when {
+                    ag.quotaGroups.isNotEmpty() -> ag.quotaGroups.map { it.remainingPct }.average()
+                    ag.models.isNotEmpty() -> ag.models.map { it.remainingPct }.average()
+                    else -> 0.0
+                }
+            } else {
+                0.0
+            }
+            val sweepAngle = (avgRemainingPct.coerceIn(0.0, 100.0).toFloat() / 100f) * 360f
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7)))
+                ),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = Color(0xFF00CEC9),
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
                                 Text(
                                     text = "Google Antigravity",
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
                                 )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .background(Color(0xFF2C324B), shape = RoundedCornerShape(12.dp))
-                                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = ag.planTier,
-                                    color = Color(0xFFE0E7FF),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                if (!ag?.userName.isNullOrBlank()) {
+                                    Text(
+                                        text = ag?.userName ?: "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF9CA3AF)
+                                    )
+                                }
                             }
                         }
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF2C324B), shape = RoundedCornerShape(12.dp))
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (ag != null && ag.isRunning) ag.planTier.ifBlank { "Online" } else "Offline",
+                                color = Color(0xFFE0E7FF),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
 
-                        Spacer(modifier = Modifier.height(18.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
-                        // Large Balance + Arc Gauge Row
+                    if (ag == null || !ag.isRunning) {
+                        Text(
+                            text = ag?.errorMessage?.takeIf { it.isNotBlank() } ?: "Offline / Not Configured",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF9CA3AF)
+                        )
+                    } else {
+                        // Large Balance + Dynamic Radial Arc Row
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
-                                val formattedCredits = java.text.NumberFormat.getNumberInstance(java.util.Locale.US).format(ag.totalCreditsRemaining)
+                                val formattedCredits = numberFormat.format(ag.totalCreditsRemaining)
                                 Text(
                                     text = formattedCredits,
-                                    fontSize = 36.sp,
+                                    fontSize = 32.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = Color.White
                                 )
                                 Text(
-                                    text = "Total Credits",
+                                    text = "Total Credits Remaining",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = Color(0xFF9CA3AF)
                                 )
+                                if (ag.promptCreditsLimit > 0 || ag.flowCreditsLimit > 0 || ag.availablePromptCredits > 0 || ag.availableFlowCredits > 0) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    val promptSummary = if (ag.availablePromptCredits > 0) {
+                                        "${numberFormat.format(ag.availablePromptCredits)} avail"
+                                    } else {
+                                        "${numberFormat.format(ag.promptCreditsUsed)} / ${numberFormat.format(ag.promptCreditsLimit)}"
+                                    }
+                                    val flowSummary = if (ag.availableFlowCredits > 0) {
+                                        "${numberFormat.format(ag.availableFlowCredits)} avail"
+                                    } else {
+                                        "${numberFormat.format(ag.flowCreditsUsed)} / ${numberFormat.format(ag.flowCreditsLimit)}"
+                                    }
+                                    Text(
+                                        text = "Prompt: $promptSummary · Flow: $flowSummary",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF9CA3AF)
+                                    )
+                                }
                             }
 
-                            // Circular Gauge Arc
                             Box(
-                                modifier = Modifier.size(100.dp),
+                                modifier = Modifier.size(96.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                                     val strokeWidth = 10.dp.toPx()
                                     drawArc(
                                         color = Color(0xFF27272A),
-                                        startAngle = 135f,
-                                        sweepAngle = 270f,
+                                        startAngle = -90f,
+                                        sweepAngle = 360f,
                                         useCenter = false,
-                                        style = androidx.compose.ui.graphics.drawscope.Stroke(
-                                            width = strokeWidth,
-                                            cap = androidx.compose.ui.graphics.StrokeCap.Round
-                                        )
+                                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
                                     )
                                     drawArc(
-                                        brush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                                        brush = Brush.sweepGradient(
                                             listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
                                         ),
-                                        startAngle = 135f,
-                                        sweepAngle = 230f,
+                                        startAngle = -90f,
+                                        sweepAngle = sweepAngle,
                                         useCenter = false,
-                                        style = androidx.compose.ui.graphics.drawscope.Stroke(
-                                            width = strokeWidth,
-                                            cap = androidx.compose.ui.graphics.StrokeCap.Round
-                                        )
+                                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
                                     )
                                 }
                                 Text(
-                                    text = if (ag.totalCreditsRemaining >= 1000) "${ag.totalCreditsRemaining / 1000}k" else "${ag.totalCreditsRemaining}",
+                                    text = "${avgRemainingPct.coerceIn(0.0, 100.0).roundToInt()}%",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
+                                    fontSize = 16.sp
                                 )
                             }
                         }
 
                         Spacer(modifier = Modifier.height(18.dp))
 
-                        Text(
-                            text = "Model bucket",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Color(0xFF27272A))
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxHeight()
-                                    .fillMaxWidth(0.88f)
-                                    .background(
-                                        androidx.compose.ui.graphics.Brush.horizontalGradient(
-                                            listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
-                                        )
-                                    )
+                        if (ag.quotaGroups.isNotEmpty()) {
+                            Text(
+                                text = "Quota Groups",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
                             )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Gemini 2.5 Pro\n(88% remaining, resets in 3h 12m)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFD1D5DB)
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "Gemini Flash (95% remaining)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFD1D5DB)
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Color(0xFF27272A))
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxHeight()
-                                    .fillMaxWidth(0.95f)
-                                    .background(
-                                        androidx.compose.ui.graphics.Brush.horizontalGradient(
-                                            listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ag.quotaGroups.forEach { group ->
+                                val pct = group.remainingPct.coerceIn(0.0, 100.0)
+                                val fraction = (pct / 100.0).toFloat().coerceIn(0f, 1f)
+                                val resetSuffix = if (group.resetTime.isNotBlank()) " · Resets: ${group.resetTime}" else ""
+                                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = group.groupName.ifBlank { "Quota Group" },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFFE5E7EB)
                                         )
-                                    )
+                                        Text(
+                                            text = "${pct.roundToInt()}% remaining$resetSuffix",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF9CA3AF)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(8.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(Color(0xFF27272A))
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxHeight()
+                                                .fillMaxWidth(fraction)
+                                                .background(
+                                                    Brush.horizontalGradient(
+                                                        listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
+                                                    )
+                                                )
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (ag.models.isNotEmpty()) {
+                            Text(
+                                text = "Model Quotas",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ag.models.forEach { model ->
+                                val pct = model.remainingPct.coerceIn(0.0, 100.0)
+                                val fraction = (pct / 100.0).toFloat().coerceIn(0f, 1f)
+                                val resetSuffix = if (model.resetTime.isNotBlank()) " · Resets: ${model.resetTime}" else ""
+                                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = model.name.ifBlank { "Model" },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFFE5E7EB)
+                                        )
+                                        Text(
+                                            text = "${pct.roundToInt()}% remaining$resetSuffix",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF9CA3AF)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(8.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(Color(0xFF27272A))
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxHeight()
+                                                .fillMaxWidth(fraction)
+                                                .background(
+                                                    Brush.horizontalGradient(
+                                                        listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
+                                                    )
+                                                )
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "No active model quota data",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF9CA3AF)
                             )
                         }
                     }
@@ -264,29 +369,29 @@ fun QuotasScreen(
             }
         }
 
-        // Cursor IDE Section
-        quotaStatus.cursor?.let { cur ->
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        androidx.compose.ui.graphics.Brush.horizontalGradient(
-                            listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
-                        )
-                    ),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
-                ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+        // 2. Cursor IDE Section
+        item {
+            val cur = quotaStatus.cursor
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7)))
+                ),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
                                     .size(32.dp)
-                                    .background(Color(0xFF5B21B6), shape = androidx.compose.foundation.shape.CircleShape),
+                                    .background(Color(0xFF5B21B6), shape = CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -304,17 +409,41 @@ fun QuotasScreen(
                                 color = Color.White
                             )
                         }
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF2C324B), shape = RoundedCornerShape(12.dp))
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (cur != null && cur.isAuthenticated) cur.planName.ifBlank { "Active" } else "Offline",
+                                color = Color(0xFFE0E7FF),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
+                    if (cur == null || !cur.isAuthenticated) {
                         Text(
-                            text = "Fast Requests: ${cur.fastRequestsUsed} / ${cur.fastRequestsLimit}",
+                            text = cur?.errorMessage?.takeIf { it.isNotBlank() } ?: "Offline / Not Configured",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF9CA3AF)
+                        )
+                    } else {
+                        Text(
+                            text = "Fast Requests: ${cur.individualUsed} / ${cur.individualLimit}",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = Color.White
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        val reqFraction = if (cur.fastRequestsLimit > 0) cur.fastRequestsUsed.toFloat() / cur.fastRequestsLimit.toFloat() else 0.8f
+                        val reqFraction = if (cur.individualLimit > 0) {
+                            (cur.individualUsed.toFloat() / cur.individualLimit.toFloat()).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -325,8 +454,31 @@ fun QuotasScreen(
                             Box(
                                 modifier = Modifier
                                     .fillMaxHeight()
-                                    .fillMaxWidth(reqFraction.coerceIn(0f, 1f))
+                                    .fillMaxWidth(reqFraction)
                                     .background(Color(0xFF3B82F6))
+                            )
+                        }
+
+                        if (cur.billingCycleEnd.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Billing Cycle Ends: ${cur.billingCycleEnd}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF9CA3AF)
+                            )
+                        }
+
+                        if (cur.onDemandUsedCents > 0 || cur.onDemandLimitCents > 0) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = String.format(
+                                    Locale.US,
+                                    "On-Demand: $%.2f / $%.2f",
+                                    cur.onDemandUsedCents / 100.0,
+                                    cur.onDemandLimitCents / 100.0
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF9CA3AF)
                             )
                         }
 
@@ -343,8 +495,9 @@ fun QuotasScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color.White
                             )
+                            val spendUsd = cur.totalSpendCents / 100.0
                             Text(
-                                text = "$${String.format("%.2f", cur.totalSpendUsd)} USD",
+                                text = String.format(Locale.US, "$%.2f USD", spendUsd),
                                 fontSize = 22.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = Color(0xFF10B981)
@@ -354,6 +507,215 @@ fun QuotasScreen(
                 }
             }
         }
+
+        // 3. Claude Code Section
+        item {
+            val claude = quotaStatus.claude
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(listOf(Color(0xFFD97706), Color(0xFFEC4899)))
+                ),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(Color(0xFFB45309), shape = CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Terminal,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Claude Code",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                        val statusBadgeText = when {
+                            claude == null || !claude.enabled -> "Offline"
+                            claude.accounts.isNotEmpty() -> claude.accounts.first().planTier.ifBlank { "Active" }
+                            else -> "Active"
+                        }
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF2C324B), shape = RoundedCornerShape(12.dp))
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = statusBadgeText,
+                                color = Color(0xFFE0E7FF),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    val isClaudeConfigured = claude != null && claude.enabled &&
+                        (claude.accounts.isNotEmpty() || claude.fiveHourUtilization > 0.0 || claude.sevenDayUtilization > 0.0 || claude.totalTokens > 0L)
+
+                    if (!isClaudeConfigured || claude == null) {
+                        Text(
+                            text = "Offline / Not Configured",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF9CA3AF)
+                        )
+                    } else {
+                        val fiveHrPct = claude.fiveHourUtilization.coerceIn(0.0, 100.0)
+                        val sevenDayPct = claude.sevenDayUtilization.coerceIn(0.0, 100.0)
+
+                        // 5-Hour Utilization Bar
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "5-Hour Window Utilization",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFE5E7EB)
+                            )
+                            Text(
+                                text = String.format(Locale.US, "%.1f%%", fiveHrPct),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF59E0B)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0xFF27272A))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth((fiveHrPct / 100.0).toFloat().coerceIn(0f, 1f))
+                                    .background(Color(0xFFF59E0B))
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // 7-Day Utilization Bar
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "7-Day Window Utilization",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFE5E7EB)
+                            )
+                            Text(
+                                text = String.format(Locale.US, "%.1f%%", sevenDayPct),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFEC4899)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0xFF27272A))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth((sevenDayPct / 100.0).toFloat().coerceIn(0f, 1f))
+                                    .background(Color(0xFFEC4899))
+                            )
+                        }
+
+                        if (claude.extraUsageLimit > 0.0 || claude.extraUsageUsed > 0.0) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = String.format(
+                                    Locale.US,
+                                    "Extra Usage: $%.2f / $%.2f",
+                                    claude.extraUsageUsed,
+                                    claude.extraUsageLimit
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF9CA3AF)
+                            )
+                        }
+
+                        if (claude.accounts.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = "Accounts",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            claude.accounts.forEach { acc ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = acc.name.ifBlank { "Claude Account" },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color.White
+                                        )
+                                        if (acc.planTier.isNotBlank()) {
+                                            Text(
+                                                text = acc.planTier,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFF9CA3AF)
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = String.format(
+                                            Locale.US,
+                                            "5h: $%.2f (%.0f%%) · 7d: $%.2f (%.0f%%)",
+                                            acc.cost5h,
+                                            acc.fiveHourUtilization,
+                                            acc.cost7d,
+                                            acc.sevenDayUtilization
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFFD1D5DB)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
+
 

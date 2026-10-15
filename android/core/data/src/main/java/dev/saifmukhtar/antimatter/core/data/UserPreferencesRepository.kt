@@ -162,10 +162,17 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun saveCredentials(url: String, clientId: String, clientSecret: String, token: String?, pubKey: String?) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val creds = Credentials(url, clientId, clientSecret, token, pubKey)
-            // Prevent duplicate profiles with the same URL
-            val existing = _profilesFlow.value.find { it.credentials.url == url }
-            if (existing != null) {
-                setActiveProfile(existing.id)
+            val currentProfiles = _profilesFlow.value.toMutableList()
+            val existingIdx = currentProfiles.indexOfFirst { it.credentials.url == url }
+            if (existingIdx >= 0) {
+                val updated = currentProfiles[existingIdx].copy(credentials = creds)
+                currentProfiles[existingIdx] = updated
+                securePrefs.edit()
+                    .putString(PROFILES_JSON, gson.toJson(currentProfiles))
+                    .putString(ACTIVE_PROFILE_ID, updated.id)
+                    .apply()
+                _profilesFlow.value = currentProfiles
+                _savedCredentialsFlow.value = creds
             } else {
                 saveProfile("Scanned Connection", creds)
             }

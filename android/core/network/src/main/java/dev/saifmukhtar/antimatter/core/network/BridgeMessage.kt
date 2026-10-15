@@ -1,3 +1,9 @@
+/*
+ * BridgeMessage.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.core.network
 
 import com.google.gson.annotations.SerializedName
@@ -37,6 +43,10 @@ data class TrajectoryStep(
     @SerializedName("value") val value: String? = null,
     @SerializedName("tool") val tool: String? = null,
     @SerializedName("command") val command: String? = null,
+    @SerializedName("toolAction") val toolAction: String? = null,
+    @SerializedName("toolSummary") val toolSummary: String? = null,
+    @SerializedName("thinking") val thinking: String? = null,
+    @SerializedName("stepIndex") val stepIndex: Int = -1
 ) {
     val stepCase: StepCase get() = StepCase.from(case)
 
@@ -44,7 +54,7 @@ data class TrajectoryStep(
     val displayText: String
         get() = when (stepCase) {
             StepCase.USER_INPUT -> value ?: ""
-            StepCase.PLANNER_RESPONSE -> value ?: ""
+            StepCase.PLANNER_RESPONSE -> value ?: thinking ?: ""
             StepCase.MARKDOWN_CHUNK, StepCase.TEXT -> value ?: ""
             StepCase.TOOL_CALL -> "Using tool: ${tool ?: "unknown"}"
             StepCase.ERROR_MESSAGE -> "⚠️ ${value ?: "Error"}"
@@ -133,7 +143,14 @@ sealed class OutboundMessage {
     abstract val id: String?
     abstract val agentId: String?
     
-    data class SendMessage(val text: String, val images: List<String>? = null, val type: String = "SEND_MESSAGE", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
+    data class SendMessage(
+        val text: String,
+        val images: List<String>? = null,
+        val conversationId: String? = null,
+        val type: String = "SEND_MESSAGE",
+        override val id: String? = null,
+        override val agentId: String? = null
+    ) : OutboundMessage()
     data class Hello(val pubkey: String, val type: String = "HELLO", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class NewConversation(val type: String = "NEW_CONVERSATION", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class CancelResponse(val type: String = "CANCEL_RESPONSE", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
@@ -149,6 +166,7 @@ sealed class OutboundMessage {
     data class SubscribeConversation(
         val conversationId: String,
         val lastKnownStepCount: Int? = null,
+        val sinceStepIndex: Int? = null,
         val type: String = "SUBSCRIBE_CONVERSATION",
         override val id: String? = null,
         override val agentId: String? = null

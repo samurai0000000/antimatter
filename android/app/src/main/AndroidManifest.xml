@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Notifications: alert when AI responds while phone is locked -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Keep connection alive when screen is off -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Foreground service for background connection -->
@@ -37,6 +38,20 @@
             android:foregroundServiceType="dataSync" 
             android:exported="false" />
 
+        <service
+            android:name="com.selfso.aimon.AimonSseService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.selfso.aimon.ApprovalReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.selfso.aimon.ACTION_APPROVE" />
+                <action android:name="com.selfso.aimon.ACTION_DENY" />
+            </intent-filter>
+        </receiver>
+
         <!-- Main Activity -->
         <activity
             android:name=".MainActivity"
@@ -48,6 +63,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             
+            <!-- Aimon QR Code Pairing Deep Link -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="aimon" android:host="pair" />
+            </intent-filter>
+
             <!-- Legacy Custom Scheme (Fallback) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
