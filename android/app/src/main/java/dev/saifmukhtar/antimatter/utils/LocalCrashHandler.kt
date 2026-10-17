@@ -1,3 +1,9 @@
+/*
+ * LocalCrashHandler.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.core.ui.utils
 
 import android.content.Context
@@ -48,7 +54,7 @@ class LocalCrashHandler(
                     pw.println("Android Version: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
                     pw.println("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
                     pw.println("Thread: ${thread.name}")
-                    pw.println("Exception: ${exception.message}")
+                    pw.println("Exception: ${exception.javaClass.name}: ${exception.message ?: ""}")
                     pw.println("Stacktrace:")
                     exception.printStackTrace(pw)
                 }
@@ -71,8 +77,60 @@ class LocalCrashHandler(
         }
         
         fun hasUnsentLogs(context: Context): Boolean {
-            val logsDir = File(context.filesDir, "crash_logs")
-            return logsDir.exists() && logsDir.listFiles()?.isNotEmpty() == true
+            return hasUnsentLogs(File(context.filesDir, "crash_logs"))
+        }
+
+        fun hasUnsentLogs(logsDir: File): Boolean {
+            return logsDir.exists() &&
+                logsDir.listFiles()?.any { it.isFile && it.name.startsWith("crash_") } == true
+        }
+
+        fun getLatestCrashSummary(context: Context): String {
+            return getLatestCrashSummary(File(context.filesDir, "crash_logs"))
+        }
+
+        fun getLatestCrashSummary(logsDir: File): String {
+            if (!logsDir.exists()) return ""
+            val files = logsDir.listFiles()?.filter { it.isFile && it.name.startsWith("crash_") }
+            if (files.isNullOrEmpty()) return ""
+
+            val latestLog = files.maxWithOrNull(
+                compareBy<File> { it.lastModified() }.thenBy { it.name }
+            ) ?: return ""
+
+            return try {
+                val lines = latestLog.readLines()
+                val timeLine = lines.firstOrNull { it.startsWith("Time:") }?.trim()
+                val exceptionLine = lines.firstOrNull { it.startsWith("Exception:") }?.trim()
+                val stackHeaderIdx = lines.indexOfFirst { it.trim() == "Stacktrace:" }
+                val throwableHeaderLine = if (stackHeaderIdx >= 0 && stackHeaderIdx + 1 < lines.size) {
+                    lines[stackHeaderIdx + 1].trim().takeIf { !it.startsWith("at ") }
+                } else {
+                    null
+                }
+                val appStackFrame = lines.firstOrNull { line ->
+                    val trimmed = line.trim()
+                    trimmed.startsWith("at ") && (
+                        trimmed.contains("dev.saifmukhtar.antimatter") ||
+                            trimmed.contains("com.selfso.aimon")
+                        )
+                }?.trim() ?: lines.firstOrNull { it.trim().startsWith("at ") }?.trim()
+
+                buildString {
+                    if (!timeLine.isNullOrBlank()) {
+                        appendLine(timeLine)
+                    }
+                    when {
+                        !throwableHeaderLine.isNullOrBlank() -> appendLine(throwableHeaderLine)
+                        !exceptionLine.isNullOrBlank() -> appendLine(exceptionLine)
+                    }
+                    if (!appStackFrame.isNullOrBlank()) {
+                        append(appStackFrame)
+                    }
+                }.trim()
+            } catch (_: Exception) {
+                ""
+            }
         }
         
         fun shareLatestCrashLog(context: Context) {
@@ -104,9 +162,16 @@ class LocalCrashHandler(
             }, 60000)
         }
 
-        fun clearLogs(context: Context) {
-            val logsDir = File(context.filesDir, "crash_logs")
+        fun clearCrashLogs(context: Context) {
+            clearCrashLogs(File(context.filesDir, "crash_logs"))
+        }
+
+        fun clearCrashLogs(logsDir: File) {
             logsDir.listFiles()?.forEach { it.delete() }
+        }
+
+        fun clearLogs(context: Context) {
+            clearCrashLogs(context)
         }
     }
 }

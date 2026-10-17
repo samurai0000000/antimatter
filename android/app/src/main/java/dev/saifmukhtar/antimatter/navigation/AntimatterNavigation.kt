@@ -96,9 +96,6 @@ fun AntimatterNavigation(
                         chatViewModel.configureEndpoint(url, grantedToken)
                         filesViewModel.configureEndpoint(url, grantedToken)
                         connectionViewModel.connectNamedProfile("aimon", url, null, null, grantedToken, null)
-                        try {
-                            context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
-                        } catch (_: Exception) {}
                     } else {
                         android.widget.Toast.makeText(
                             context,
@@ -122,10 +119,33 @@ fun AntimatterNavigation(
     }
     
     if (showCrashDialog) {
+        val crashSummary = remember { LocalCrashHandler.getLatestCrashSummary(context) }
         AlertDialog(
-            onDismissRequest = { showCrashDialog = false },
+            onDismissRequest = {
+                LocalCrashHandler.clearCrashLogs(context)
+                showCrashDialog = false
+            },
             title = { Text("Crash Detected") },
-            text = { Text("It looks like the app crashed recently. Would you like to share the crash log to help us fix the issue?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("It looks like the app crashed recently. Would you like to share the crash log to help us fix the issue?")
+                    if (crashSummary.isNotBlank()) {
+                        Surface(
+                            color = Color(0xFF18181B),
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = crashSummary,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                color = Color(0xFFE4E4E7),
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+                }
+            },
             confirmButton = {
                 TextButton(onClick = {
                     LocalCrashHandler.shareLatestCrashLog(context)
@@ -136,7 +156,7 @@ fun AntimatterNavigation(
             },
             dismissButton = {
                 TextButton(onClick = { 
-                    LocalCrashHandler.clearLogs(context)
+                    LocalCrashHandler.clearCrashLogs(context)
                     showCrashDialog = false 
                 }) {
                     Text("Dismiss")
@@ -254,9 +274,6 @@ fun AntimatterNavigation(
                     token,
                     pubKey
                 )
-                try {
-                    context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
-                } catch (_: Exception) {}
             },
             onNavigateBack = { isScanningQR = false },
             onPairAimon = { host, port, secret, onResult ->
@@ -280,9 +297,6 @@ fun AntimatterNavigation(
                     aimonViewModel.configureEndpoint(savedUrl, effectiveToken)
                     chatViewModel.configureEndpoint(savedUrl, effectiveToken)
                     filesViewModel.configureEndpoint(savedUrl, effectiveToken)
-                    try {
-                        context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
-                    } catch (_: Exception) {}
                 }
             }
             BackHandler(enabled = currentTab != 2) {
@@ -477,9 +491,6 @@ fun AntimatterNavigation(
                             chatViewModel.configureEndpoint(url, grantedToken)
                             filesViewModel.configureEndpoint(url, grantedToken)
                             connectionViewModel.connectManually(url, clientId, clientSecret, grantedToken)
-                            try {
-                                context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
-                            } catch (_: Exception) {}
                         } else {
                             android.widget.Toast.makeText(
                                 context,
@@ -494,9 +505,6 @@ fun AntimatterNavigation(
                     chatViewModel.configureEndpoint(url, effectiveToken)
                     filesViewModel.configureEndpoint(url, effectiveToken)
                     connectionViewModel.connectManually(url, clientId, clientSecret, effectiveToken.ifBlank { null })
-                    try {
-                        context.startService(Intent(context, com.selfso.aimon.AimonSseService::class.java))
-                    } catch (_: Exception) {}
                 }
             },
             onScanQRClick = { isScanningQR = true },

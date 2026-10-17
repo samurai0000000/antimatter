@@ -84,16 +84,27 @@ class BridgeWebSocket(private val context: Context) {
     // State flows
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     private fun updateConnectionState(newState: ConnectionState) {
+        val prevState = _connectionState.value
         _connectionState.update { newState }
+        if (prevState == newState) return
+
         if (newState == ConnectionState.CONNECTED) {
-            val intent = Intent(context, BridgeService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                val intent = Intent(context, BridgeService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w("BridgeWebSocket", "Unable to start BridgeService: ${e.message}")
             }
-        } else if (newState == ConnectionState.DISCONNECTED) {
-            context.stopService(Intent(context, BridgeService::class.java))
+        } else if (newState == ConnectionState.DISCONNECTED && prevState == ConnectionState.CONNECTED) {
+            try {
+                context.stopService(Intent(context, BridgeService::class.java))
+            } catch (e: Exception) {
+                Log.w("BridgeWebSocket", "Unable to stop BridgeService: ${e.message}")
+            }
         }
     }
     val connectionState: StateFlow<ConnectionState> = _connectionState
@@ -600,7 +611,7 @@ class BridgeWebSocket(private val context: Context) {
                                 val model = if (json.has("model") && !json.get("model").isJsonNull) {
                                     json.get("model").asString
                                 } else {
-                                    "gemini-2.5-pro"
+                                    "gemini-4-argon-medium"
                                 }
                                 val stepCount = if (json.has("stepCount") && !json.get("stepCount").isJsonNull) {
                                     json.get("stepCount").asInt
@@ -734,7 +745,7 @@ class BridgeWebSocket(private val context: Context) {
                         is OutboundMessage.NewConversation -> {
                             _messages.emit(InboundMessage.SessionState(
                                 conversationId = "new",
-                                model = "gemini-2.5-pro",
+                                model = "gemini-4-argon-medium",
                                 stepCount = 0,
                                 agentId = message.agentId
                             ))

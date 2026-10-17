@@ -54,7 +54,7 @@ data class ChatUiState(
     val activeFileLanguage: String? = null,
     val cloudflareUrl: String? = null,
     val environment: String? = null,
-    val currentModel: String = "gemini-2.5-pro",
+    val currentModel: String = "gemini-4-argon-medium",
     val error: String? = null,
     val history: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
     val searchQuery: String = "",
