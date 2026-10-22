@@ -98,8 +98,8 @@ data class AntigravityQuota(
     val averageRemainingPct: Double
         get() = when {
             !isRunning -> 0.0
-            quotaGroups.isNotEmpty() -> quotaGroups.map { it.remainingPct }.average()
-            models.isNotEmpty() -> models.map { it.remainingPct }.average()
+            quotaGroups.isNotEmpty() -> quotaGroups.first().remainingPct
+            models.isNotEmpty() -> models.minOf { it.remainingPct }
             else -> 0.0
         }
 }
@@ -125,14 +125,14 @@ data class QuotaGroup(
         get() = when {
             rawRemainingPct != null -> rawRemainingPct
             rawRemainingFraction != null -> rawRemainingFraction * 100.0
-            buckets.isNotEmpty() -> buckets.map { it.remainingPct }.average()
+            buckets.isNotEmpty() -> buckets.minOf { it.remainingPct }
             else -> 0.0
         }
 
     val resetTime: String
         get() = when {
             !rawResetTime.isNullOrBlank() -> rawResetTime
-            buckets.isNotEmpty() -> buckets.first().resetTimeDisplay
+            buckets.isNotEmpty() -> (buckets.minByOrNull { it.remainingPct } ?: buckets.first()).resetTimeDisplay
             else -> ""
         }
 }
@@ -160,6 +160,13 @@ data class QuotaBucket(
 
     val percentRemaining: Int
         get() = remainingPct.roundToInt()
+
+    val windowBadge: String
+        get() = when (window.lowercase()) {
+            "weekly" -> "Weekly"
+            "5h", "five_hour" -> "5-Hour"
+            else -> displayName.ifBlank { "Limit" }
+        }
 
     val resetTimeDisplay: String
         get() = formatDurationSeconds(resetTimeRemainingSeconds, resetTimeIso)

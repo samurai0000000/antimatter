@@ -594,6 +594,32 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals("Gemini", ag.quotaGroups[0].displayName)
         assertEquals(74.5, ag.quotaGroups[0].remainingPct, 0.01)
 
+        // Verify multi-bucket QuotaGroup uses binding minimum bucket (not average of Weekly + 5-Hour)
+        val multiBucketGroup = QuotaGroup(
+            displayName = "Gemini Models",
+            description = "Models within this group: Gemini Flash, Gemini Pro",
+            buckets = listOf(
+                QuotaBucket(
+                    bucketId = "gemini-weekly",
+                    displayName = "Weekly Limit Remaining",
+                    remainingFraction = 0.201,
+                    resetTimeRemainingSeconds = 86400L,
+                    window = "weekly"
+                ),
+                QuotaBucket(
+                    bucketId = "gemini-5h",
+                    displayName = "Five Hour Limit Remaining",
+                    remainingFraction = 0.950,
+                    resetTimeRemainingSeconds = 5400L,
+                    window = "5h"
+                )
+            )
+        )
+        assertEquals(20.1, multiBucketGroup.remainingPct, 0.01)
+        assertEquals("1d 0h", multiBucketGroup.resetTime)
+        assertEquals("Weekly", multiBucketGroup.buckets[0].windowBadge)
+        assertEquals("5-Hour", multiBucketGroup.buckets[1].windowBadge)
+
         // 2. Cursor dynamic spend and individual usage
         val cur = status.cursor
         assertNotNull("Cursor usage must be parsed", cur)

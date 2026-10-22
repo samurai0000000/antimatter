@@ -209,16 +209,8 @@ fun QuotasScreen(
         // 1. Google Antigravity Section
         item {
             val ag = quotaStatus.antigravity
-            val avgRemainingPct = if (ag != null && ag.isRunning) {
-                when {
-                    ag.quotaGroups.isNotEmpty() -> ag.quotaGroups.map { it.remainingPct }.average()
-                    ag.models.isNotEmpty() -> ag.models.map { it.remainingPct }.average()
-                    else -> 0.0
-                }
-            } else {
-                0.0
-            }
-            val sweepAngle = (avgRemainingPct.coerceIn(0.0, 100.0).toFloat() / 100f) * 360f
+            val primaryRemainingPct = ag?.averageRemainingPct ?: 0.0
+            val sweepAngle = (primaryRemainingPct.coerceIn(0.0, 100.0).toFloat() / 100f) * 360f
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -288,16 +280,22 @@ fun QuotasScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 val formattedCredits = numberFormat.format(ag.totalCreditsRemaining)
+                                val minCreditReq = ag.availableCredits.firstOrNull()?.minimumCreditAmountForUsage ?: 0
+                                val creditLabel = if (ag.availableCredits.isNotEmpty()) {
+                                    if (minCreditReq > 0) "Google One AI Credits (Min $minCreditReq/req)" else "Google One AI Credits"
+                                } else {
+                                    "Total Credits Remaining"
+                                }
                                 Text(
                                     text = formattedCredits,
                                     fontSize = 32.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = Color.White
+                                    color = Color(0xFF00CEC9)
                                 )
                                 Text(
-                                    text = "Total Credits Remaining",
+                                    text = creditLabel,
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = Color(0xFF9CA3AF)
                                 )
@@ -313,8 +311,13 @@ fun QuotasScreen(
                                     } else {
                                         "${numberFormat.format(ag.flowCreditsUsed)} / ${numberFormat.format(ag.flowCreditsLimit)}"
                                     }
+                                    val monthlySuffix = if (ag.monthlyPromptCredits > 0 || ag.monthlyFlowCredits > 0) {
+                                        " (Mo: ${ag.monthlyPromptCredits / 1000}k/${ag.monthlyFlowCredits / 1000}k)"
+                                    } else {
+                                        ""
+                                    }
                                     Text(
-                                        text = "Prompt: $promptSummary · Flow: $flowSummary",
+                                        text = "Prompt: $promptSummary · Flow: $flowSummary$monthlySuffix",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color(0xFF9CA3AF)
                                     )
@@ -345,7 +348,7 @@ fun QuotasScreen(
                                     )
                                 }
                                 Text(
-                                    text = "${avgRemainingPct.coerceIn(0.0, 100.0).roundToInt()}%",
+                                    text = "${primaryRemainingPct.coerceIn(0.0, 100.0).roundToInt()}%",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp
@@ -364,50 +367,152 @@ fun QuotasScreen(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             ag.quotaGroups.forEach { group ->
-                                val pct = group.remainingPct.coerceIn(0.0, 100.0)
-                                val fraction = (pct / 100.0).toFloat().coerceIn(0f, 1f)
-                                val resetSuffix = if (group.resetTime.isNotBlank()) " · Resets: ${group.resetTime}" else ""
-                                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 6.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF1A1D26))
+                                        .padding(12.dp)
+                                ) {
+                                    Column {
                                         Text(
                                             text = group.groupName.ifBlank { "Quota Group" },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.Medium,
-                                            color = Color(0xFFE5E7EB)
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
                                         )
-                                        Text(
-                                            text = "${pct.roundToInt()}% remaining$resetSuffix",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF9CA3AF)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(8.dp)
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(Color(0xFF27272A))
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxHeight()
-                                                .fillMaxWidth(fraction)
-                                                .background(
-                                                    Brush.horizontalGradient(
-                                                        listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
+                                        if (group.description.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = group.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFF9CA3AF)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        if (group.buckets.isNotEmpty()) {
+                                            group.buckets.forEach { bucket ->
+                                                val bPct = bucket.remainingPct.coerceIn(0.0, 100.0)
+                                                val bFrac = (bPct / 100.0).toFloat().coerceIn(0f, 1f)
+                                                val barColor = when {
+                                                    bPct <= 20.0 -> Color(0xFFEF4444)
+                                                    bPct <= 50.0 -> Color(0xFFF59E0B)
+                                                    else -> Color(0xFF10B981)
+                                                }
+                                                val resetLabel = when {
+                                                    bucket.resetTimeDisplay.isNotBlank() -> "Resets in ${bucket.resetTimeDisplay}"
+                                                    bPct >= 99.9 -> "Active"
+                                                    else -> ""
+                                                }
+                                                Column(modifier = Modifier.padding(vertical = 5.dp)) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = bucket.displayName.ifBlank { bucket.windowBadge },
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = Color(0xFFE5E7EB)
+                                                        )
+                                                        Text(
+                                                            text = "${bPct.roundToInt()}%",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = barColor
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(8.dp)
+                                                            .clip(RoundedCornerShape(4.dp))
+                                                            .background(Color(0xFF27272A))
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxHeight()
+                                                                .fillMaxWidth(bFrac)
+                                                                .background(barColor)
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.height(3.dp))
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = bucket.windowBadge,
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = Color(0xFF9CA3AF)
+                                                        )
+                                                        if (resetLabel.isNotBlank()) {
+                                                            Text(
+                                                                text = resetLabel,
+                                                                fontSize = 11.sp,
+                                                                color = Color(0xFF9CA3AF)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            val pct = group.remainingPct.coerceIn(0.0, 100.0)
+                                            val fraction = (pct / 100.0).toFloat().coerceIn(0f, 1f)
+                                            val resetSuffix = if (group.resetTime.isNotBlank()) " · Resets: ${group.resetTime}" else ""
+                                            Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Text(
+                                                        text = "Remaining",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = Color(0xFFE5E7EB)
                                                     )
-                                                )
-                                        )
+                                                    Text(
+                                                        text = "${pct.roundToInt()}% remaining$resetSuffix",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = Color(0xFF9CA3AF)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(8.dp)
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(Color(0xFF27272A))
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxHeight()
+                                                            .fillMaxWidth(fraction)
+                                                            .background(
+                                                                Brush.horizontalGradient(
+                                                                    listOf(Color(0xFF00CEC9), Color(0xFF6C5CE7))
+                                                                )
+                                                            )
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        } else if (ag.models.isNotEmpty()) {
+                        }
+
+                        if (ag.models.isNotEmpty()) {
+                            if (ag.quotaGroups.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
                             Text(
-                                text = "Model Quotas",
+                                text = "Individual Model Capacities (${ag.models.size})",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color.White
@@ -455,7 +560,9 @@ fun QuotasScreen(
                                     }
                                 }
                             }
-                        } else {
+                        }
+
+                        if (ag.quotaGroups.isEmpty() && ag.models.isEmpty()) {
                             Text(
                                 text = "No active model quota data",
                                 style = MaterialTheme.typography.bodySmall,
