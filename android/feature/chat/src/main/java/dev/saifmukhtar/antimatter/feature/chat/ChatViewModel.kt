@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import dev.saifmukhtar.antimatter.core.data.UserPreferencesRepository
 import dev.saifmukhtar.antimatter.core.data.AppDatabase
@@ -55,10 +56,25 @@ data class ChatUiState(
     val cloudflareUrl: String? = null,
     val environment: String? = null,
     val currentModel: String = "gemini-4-argon-medium",
+    val selectedModel: String = "default",
+    val conversationModel: String = "",
     val error: String? = null,
     val history: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
+    val filteredHistory: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
     val searchQuery: String = "",
     val searchResults: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary>? = null,
+    val selectedWorkspaceFilter: String = "ALL",
+    val availableWorkspaces: List<String> = emptyList(),
+    val showConversationPickerSheet: Boolean = false,
+    val showPromptsSheet: Boolean = false,
+    val isInChatSearchActive: Boolean = false,
+    val inChatSearchQuery: String = "",
+    val inChatMatches: List<Int> = emptyList(),
+    val inChatCurrentMatchIdx: Int = 0,
+    val focusedOriginalStepIndex: Int? = null,
+    val pendingFocusStepIndex: Int? = null,
+    val initialScrollIndex: Int = 0,
+    val initialScrollOffset: Int = 0,
     val artifacts: List<dev.saifmukhtar.antimatter.core.network.FileNode> = emptyList(),
     val activeArtifactContent: String? = null,
     val activeAgentId: String? = null,
@@ -77,6 +93,10 @@ class ChatViewModel @Inject constructor(
     
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    private val richSummaryMap = java.util.concurrent.ConcurrentHashMap<String, dev.saifmukhtar.antimatter.core.network.ConversationSummary>()
+    private var serverSearchJob: kotlinx.coroutines.Job? = null
+    private var pendingFocusIsTranscriptStepIndex: Boolean = false
 
     private var baseUrl: String = "http://127.0.0.1:3883"
     private var token: String = ""
@@ -130,7 +150,12 @@ class ChatViewModel @Inject constructor(
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            val localAgents = appDao.getAllAgentsFlow().firstOrNull()
+            val localAgents = try {
+                appDao.getAllAgentsFlow().catch { emit(emptyList()) }.firstOrNull()
+            } catch (t: Throwable) {
+                android.util.Log.w("ChatViewModel", "getAllAgentsFlow error: ${t.message}")
+                null
+            }
             val agentInfos = if (localAgents != null && localAgents.isNotEmpty()) {
                 localAgents.map { dev.saifmukhtar.antimatter.core.network.InboundMessage.AgentInfo(it.id, it.name, it.status) }
             } else {
@@ -148,15 +173,22 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.map { it.activeAgentId }.distinctUntilChanged().flatMapLatest { agentId ->
                 if (agentId != null) {
-                    appDao.getConversationsForAgentFlow(agentId)
+                    appDao.getConversationsForAgentFlow(agentId).catch { e ->
+                        android.util.Log.w("ChatViewModel", "getConversationsForAgentFlow error: ${e.message}")
+                        emit(emptyList())
+                    }
                 } else {
                     flowOf(emptyList())
                 }
+            }.catch { e ->
+                android.util.Log.w("ChatViewModel", "conversations flow error: ${e.message}")
+                emit(emptyList())
             }.collect { localConversations ->
-                val historyList = localConversations.map { 
-                    dev.saifmukhtar.antimatter.core.network.ConversationSummary(id = it.id, title = it.title, timestamp = it.timestamp) 
+                try {
+                    rebuildHistoryFromMap(localConversations)
+                } catch (t: Throwable) {
+                    android.util.Log.e("ChatViewModel", "rebuildHistoryFromMap error", t)
                 }
-                _uiState.update { it.copy(history = historyList) }
             }
         }
 
@@ -209,17 +241,398 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun updateSearchQuery(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
-        if (query.isBlank()) {
-            _uiState.update { it.copy(searchResults = null) }
+    private fun mergeSummaryWithRich(
+        incoming: dev.saifmukhtar.antimatter.core.network.ConversationSummary
+    ): dev.saifmukhtar.antimatter.core.network.ConversationSummary {
+        val prev = richSummaryMap[incoming.id] ?: return incoming
+        val bestTitle = when {
+            incoming.title.isNotBlank() && incoming.title != "Chat" -> incoming.title
+            prev.title.isNotBlank() && prev.title != "Chat" -> prev.title
+            else -> incoming.title.ifBlank { prev.title }
+        }
+        val bestTs = maxOf(prev.timestamp, incoming.timestamp)
+        val mergedPrompts = if (incoming.userPrompts.isNotEmpty()) incoming.userPrompts else prev.userPrompts
+        return incoming.copy(
+            title = bestTitle,
+            timestamp = bestTs,
+            source = incoming.source.ifBlank { prev.source },
+            workspace = incoming.workspace.ifBlank { prev.workspace },
+            workspacePath = incoming.workspacePath.ifBlank { prev.workspacePath },
+            model = incoming.model.ifBlank { prev.model },
+            active = incoming.active || (incoming.stepCount == 0 && prev.active),
+            openInTerminal = incoming.openInTerminal || (incoming.stepCount == 0 && prev.openInTerminal),
+            terminalPts = incoming.terminalPts.ifBlank { prev.terminalPts },
+            stepCount = maxOf(prev.stepCount, incoming.stepCount),
+            firstPrompt = incoming.firstPrompt.ifBlank { prev.firstPrompt },
+            lastPrompt = incoming.lastPrompt.ifBlank { prev.lastPrompt },
+            lastPromptStepIndex = if (incoming.lastPromptStepIndex >= 0) incoming.lastPromptStepIndex else prev.lastPromptStepIndex,
+            userPrompts = mergedPrompts,
+            matchedPrompt = incoming.matchedPrompt.ifBlank { prev.matchedPrompt },
+            matchedStepIndex = if (incoming.matchedStepIndex >= 0) incoming.matchedStepIndex else prev.matchedStepIndex
+        )
+    }
+
+    private fun sortConversations(
+        list: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary>
+    ): List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> {
+        val now = System.currentTimeMillis()
+        val sevenDaysMs = 7L * 24L * 3600L * 1000L
+        return list.sortedWith(
+            compareByDescending<dev.saifmukhtar.antimatter.core.network.ConversationSummary> {
+                (it.openInTerminal || it.active) && (now - it.timestamp <= sevenDaysMs)
+            }.thenByDescending { it.openInTerminal }
+                .thenByDescending { it.active }
+                .thenByDescending { it.timestamp }
+        )
+    }
+
+    private fun rebuildHistoryFromMap(localEntities: List<ConversationEntity>? = null) {
+        val combined = LinkedHashMap<String, dev.saifmukhtar.antimatter.core.network.ConversationSummary>()
+        for ((id, summary) in richSummaryMap) {
+            combined[id] = summary
+        }
+        localEntities?.forEach { entity ->
+            val existingRich = combined[entity.id]
+            if (existingRich != null) {
+                val bestTitle = when {
+                    existingRich.title.isNotBlank() && existingRich.title != "Chat" -> existingRich.title
+                    entity.title.isNotBlank() && entity.title != "Chat" -> entity.title
+                    else -> existingRich.title.ifBlank { entity.title }
+                }
+                val merged = existingRich.copy(
+                    title = bestTitle,
+                    timestamp = maxOf(existingRich.timestamp, entity.timestamp),
+                    stepCount = maxOf(existingRich.stepCount, entity.stepCount)
+                )
+                combined[entity.id] = merged
+                richSummaryMap[entity.id] = merged
+            } else {
+                val fromEntity = dev.saifmukhtar.antimatter.core.network.ConversationSummary(
+                    id = entity.id,
+                    title = entity.title,
+                    timestamp = entity.timestamp,
+                    stepCount = entity.stepCount
+                )
+                combined[entity.id] = fromEntity
+                richSummaryMap[entity.id] = fromEntity
+            }
+        }
+        val sorted = sortConversations(combined.values.toList())
+        val activeCid = _uiState.value.conversationId
+        val resolvedConvModel = if (!activeCid.isNullOrBlank() && activeCid != "new") {
+            richSummaryMap[activeCid]?.model?.takeIf { it.isNotBlank() } ?: _uiState.value.conversationModel
+        } else {
+            _uiState.value.conversationModel
+        }
+        _uiState.update {
+            it.copy(
+                history = sorted,
+                conversationModel = resolvedConvModel
+            )
+        }
+        reapplySearchFilter()
+    }
+
+    private fun resolveStepIndexForFocus(
+        steps: List<TrajectoryStep>,
+        rawTarget: Int?,
+        isTranscriptIdx: Boolean
+    ): Int? {
+        if (rawTarget == null || steps.isEmpty()) return rawTarget
+        if (rawTarget == -1) {
+            val lastUserIdx = steps.indexOfLast { it.stepCase == StepCase.USER_INPUT }
+            return if (lastUserIdx >= 0) lastUserIdx else (steps.size - 1).coerceAtLeast(0)
+        }
+        if (isTranscriptIdx) {
+            val userMatch = steps.indexOfFirst { it.stepCase == StepCase.USER_INPUT && it.stepIndex == rawTarget }
+            if (userMatch >= 0) return userMatch
+            val anyMatch = steps.indexOfFirst { it.stepIndex == rawTarget }
+            if (anyMatch >= 0) return anyMatch
+            if (rawTarget in steps.indices) return rawTarget
+            val lastUserIdx = steps.indexOfLast { it.stepCase == StepCase.USER_INPUT }
+            if (lastUserIdx >= 0) return lastUserIdx
+        }
+        return rawTarget.coerceIn(0, (steps.size - 1).coerceAtLeast(0))
+    }
+
+    fun reapplySearchFilter() {
+        val state = _uiState.value
+        val allHistory = state.history
+        val workspaces = allHistory
+            .mapNotNull { it.workspace.takeIf { w -> w.isNotBlank() } }
+            .distinct()
+            .sorted()
+
+        val wsFilter = state.selectedWorkspaceFilter
+        val wsFiltered = when (wsFilter) {
+            "ALL" -> allHistory
+            "OPEN_AGY", "OPEN" -> allHistory.filter { it.openInTerminal || it.active }
+            else -> allHistory.filter { it.workspace.equals(wsFilter, ignoreCase = true) }
+        }
+
+        val qTrimmed = state.searchQuery.trim()
+        if (qTrimmed.isBlank()) {
+            val cleaned = wsFiltered.map {
+                if (it.matchedPrompt.isNotBlank() || it.matchedStepIndex != -1) {
+                    it.copy(matchedPrompt = "", matchedStepIndex = -1)
+                } else {
+                    it
+                }
+            }
+            _uiState.update {
+                it.copy(
+                    availableWorkspaces = workspaces,
+                    filteredHistory = cleaned,
+                    searchResults = if (wsFilter == "ALL") null else cleaned
+                )
+            }
             return
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            val history = _uiState.value.history
-            val results = history.filter { it.title.contains(query, ignoreCase = true) }
-            _uiState.update { it.copy(searchResults = results) }
+
+        val qLower = qTrimmed.lowercase()
+        val tokens = qLower.split(Regex("\\s+")).filter { it.isNotBlank() }
+
+        val matchedList = mutableListOf<dev.saifmukhtar.antimatter.core.network.ConversationSummary>()
+        for (conv in wsFiltered) {
+            val promptsText = conv.userPrompts.joinToString(" ") { it.text }
+            val combinedText = buildString {
+                append(conv.title).append(' ')
+                append(conv.workspace).append(' ')
+                append(conv.workspacePath).append(' ')
+                append(conv.source).append(' ')
+                append(conv.model).append(' ')
+                append(conv.id).append(' ')
+                append(conv.firstPrompt).append(' ')
+                append(conv.lastPrompt).append(' ')
+                append(conv.matchedPrompt).append(' ')
+                append(promptsText)
+            }.lowercase()
+
+            if (tokens.all { token -> combinedText.contains(token) }) {
+                val reversedPrompts = conv.userPrompts.asReversed()
+                val matchedEntry = reversedPrompts.firstOrNull { it.text.lowercase().contains(qLower) }
+                    ?: reversedPrompts.firstOrNull { entry ->
+                        val lower = entry.text.lowercase()
+                        tokens.all { tok -> lower.contains(tok) }
+                    }
+                    ?: reversedPrompts.firstOrNull { entry ->
+                        val lower = entry.text.lowercase()
+                        tokens.any { tok -> lower.contains(tok) }
+                    }
+
+                val finalMatchedPrompt: String
+                val finalMatchedStepIdx: Int
+                when {
+                    matchedEntry != null -> {
+                        finalMatchedPrompt = matchedEntry.text
+                        finalMatchedStepIdx = matchedEntry.stepIndex
+                    }
+                    conv.matchedPrompt.isNotBlank() && tokens.any { conv.matchedPrompt.lowercase().contains(it) } -> {
+                        finalMatchedPrompt = conv.matchedPrompt
+                        finalMatchedStepIdx = conv.matchedStepIndex
+                    }
+                    conv.lastPrompt.isNotBlank() && tokens.any { conv.lastPrompt.lowercase().contains(it) } -> {
+                        finalMatchedPrompt = conv.lastPrompt
+                        finalMatchedStepIdx = if (conv.lastPromptStepIndex >= 0) conv.lastPromptStepIndex else -1
+                    }
+                    conv.firstPrompt.isNotBlank() && tokens.any { conv.firstPrompt.lowercase().contains(it) } -> {
+                        finalMatchedPrompt = conv.firstPrompt
+                        finalMatchedStepIdx = 0
+                    }
+                    else -> {
+                        finalMatchedPrompt = ""
+                        finalMatchedStepIdx = -1
+                    }
+                }
+
+                matchedList.add(
+                    conv.copy(
+                        matchedPrompt = finalMatchedPrompt,
+                        matchedStepIndex = finalMatchedStepIdx
+                    )
+                )
+            }
         }
+
+        _uiState.update {
+            it.copy(
+                availableWorkspaces = workspaces,
+                filteredHistory = matchedList,
+                searchResults = matchedList
+            )
+        }
+    }
+
+    fun updateSearchQuery(query: String) {
+        _uiState.update { it.copy(searchQuery = query) }
+        reapplySearchFilter()
+        serverSearchJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.length >= 2) {
+            serverSearchJob = viewModelScope.launch(Dispatchers.IO) {
+                kotlinx.coroutines.delay(250)
+                webSocket.searchHttpConversations(trimmed)
+            }
+        }
+    }
+
+    fun setWorkspaceFilter(filter: String) {
+        _uiState.update { it.copy(selectedWorkspaceFilter = filter) }
+        reapplySearchFilter()
+    }
+
+    fun setShowConversationPickerSheet(show: Boolean) {
+        _uiState.update { it.copy(showConversationPickerSheet = show) }
+        if (show) {
+            requestHistory()
+        }
+    }
+
+    fun setShowPromptsSheet(show: Boolean) {
+        _uiState.update { it.copy(showPromptsSheet = show) }
+    }
+
+    fun toggleInChatSearch(active: Boolean) {
+        if (!active) {
+            _uiState.update {
+                it.copy(
+                    isInChatSearchActive = false,
+                    inChatSearchQuery = "",
+                    inChatMatches = emptyList(),
+                    inChatCurrentMatchIdx = 0
+                )
+            }
+        } else {
+            _uiState.update { it.copy(isInChatSearchActive = true) }
+        }
+    }
+
+    fun updateInChatSearchQuery(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    inChatSearchQuery = query,
+                    inChatMatches = emptyList(),
+                    inChatCurrentMatchIdx = 0
+                )
+            }
+            return
+        }
+        val qLower = trimmed.lowercase()
+        val currentSteps = _uiState.value.steps
+        val matches = mutableListOf<Int>()
+        for (idx in currentSteps.indices) {
+            val step = currentSteps[idx]
+            val match = step.displayText.lowercase().contains(qLower) ||
+                (step.thinkingText?.lowercase()?.contains(qLower) == true) ||
+                (step.toolName?.lowercase()?.contains(qLower) == true) ||
+                (step.command?.lowercase()?.contains(qLower) == true) ||
+                (step.toolSummary?.lowercase()?.contains(qLower) == true) ||
+                (step.toolAction?.lowercase()?.contains(qLower) == true)
+            if (match) {
+                matches.add(idx)
+            }
+        }
+        pendingFocusIsTranscriptStepIndex = false
+        val firstMatch = matches.firstOrNull()
+        _uiState.update {
+            it.copy(
+                inChatSearchQuery = query,
+                inChatMatches = matches,
+                inChatCurrentMatchIdx = 0,
+                focusedOriginalStepIndex = firstMatch ?: it.focusedOriginalStepIndex,
+                pendingFocusStepIndex = firstMatch
+            )
+        }
+    }
+
+    fun nextInChatMatch() {
+        val state = _uiState.value
+        if (state.inChatMatches.isEmpty()) return
+        val nextIdx = (state.inChatCurrentMatchIdx + 1) % state.inChatMatches.size
+        val targetStep = state.inChatMatches[nextIdx]
+        pendingFocusIsTranscriptStepIndex = false
+        _uiState.update {
+            it.copy(
+                inChatCurrentMatchIdx = nextIdx,
+                focusedOriginalStepIndex = targetStep,
+                pendingFocusStepIndex = targetStep
+            )
+        }
+    }
+
+    fun prevInChatMatch() {
+        val state = _uiState.value
+        if (state.inChatMatches.isEmpty()) return
+        val prevIdx = if (state.inChatCurrentMatchIdx - 1 < 0) {
+            state.inChatMatches.lastIndex
+        } else {
+            state.inChatCurrentMatchIdx - 1
+        }
+        val targetStep = state.inChatMatches[prevIdx]
+        pendingFocusIsTranscriptStepIndex = false
+        _uiState.update {
+            it.copy(
+                inChatCurrentMatchIdx = prevIdx,
+                focusedOriginalStepIndex = targetStep,
+                pendingFocusStepIndex = targetStep
+            )
+        }
+    }
+
+    fun focusStep(originalStepIndex: Int) {
+        pendingFocusIsTranscriptStepIndex = false
+        _uiState.update {
+            it.copy(
+                focusedOriginalStepIndex = originalStepIndex,
+                pendingFocusStepIndex = originalStepIndex,
+                showPromptsSheet = false
+            )
+        }
+    }
+
+    fun clearPendingFocus() {
+        _uiState.update { it.copy(pendingFocusStepIndex = null) }
+    }
+
+    fun clearFocusHighlight() {
+        pendingFocusIsTranscriptStepIndex = false
+        _uiState.update {
+            it.copy(
+                focusedOriginalStepIndex = null,
+                pendingFocusStepIndex = null
+            )
+        }
+    }
+
+    fun selectConversation(id: String) {
+        subscribeConversation(id, null)
+    }
+
+    fun selectConversationAndFocusPrompt(id: String, targetStepIndex: Int? = null) {
+        _uiState.update { it.copy(showConversationPickerSheet = false) }
+        pendingFocusIsTranscriptStepIndex = true
+        if (id == _uiState.value.conversationId && _uiState.value.steps.isNotEmpty() && targetStepIndex != null) {
+            val resolved = resolveStepIndexForFocus(_uiState.value.steps, targetStepIndex, true)
+            pendingFocusIsTranscriptStepIndex = false
+            _uiState.update {
+                it.copy(
+                    focusedOriginalStepIndex = resolved,
+                    pendingFocusStepIndex = resolved
+                )
+            }
+            return
+        }
+        subscribeConversation(id, targetStepIndex)
+    }
+
+    fun refreshHistory() {
+        requestHistory()
+    }
+
+    fun selectModel(model: String) {
+        _uiState.update { it.copy(selectedModel = model) }
     }
 
     private fun handleInboundMessage(message: InboundMessage) {
@@ -253,18 +666,25 @@ class ChatViewModel @Inject constructor(
                             conversationId = "new",
                             steps = emptyList(),
                             expectedStepCount = 0,
-                            currentModel = message.model ?: it.currentModel
+                            currentModel = message.model.ifBlank { it.currentModel },
+                            selectedModel = "default",
+                            conversationModel = "",
+                            focusedOriginalStepIndex = null,
+                            pendingFocusStepIndex = null
                         )
                     }
                     return
                 }
 
                 pendingFullRefresh = true
+                val richModel = message.conversationId?.let { richSummaryMap[it]?.model } ?: ""
+                val resolvedConvModel = richModel.ifBlank { message.model }
                 _uiState.update {
                     it.copy(
                         conversationId = message.conversationId,
                         expectedStepCount = message.stepCount,
-                        currentModel = message.model ?: it.currentModel,
+                        currentModel = message.model.ifBlank { it.currentModel },
+                        conversationModel = resolvedConvModel.ifBlank { it.conversationModel },
                         cloudflareUrl = message.cloudflareUrl,
                         environment = message.environment
                     )
@@ -429,13 +849,15 @@ class ChatViewModel @Inject constructor(
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
                                 val existing = appDao.getConversation(cidToSave)
+                                val richTitle = richSummaryMap[cidToSave]?.title?.takeIf { it.isNotBlank() && it != "Chat" }
                                 if (existing == null) {
                                     appDao.insertConversation(
                                         ConversationEntity(
                                             id = cidToSave,
-                                            title = "Chat",
+                                            title = richTitle ?: "Chat",
                                             timestamp = System.currentTimeMillis(),
-                                            agentId = message.agentId ?: state.activeAgentId ?: "antigravity"
+                                            agentId = message.agentId ?: state.activeAgentId ?: "antigravity",
+                                            stepCount = newSteps.size
                                         )
                                     )
                                 }
@@ -445,10 +867,26 @@ class ChatViewModel @Inject constructor(
                             }
                         }
                     }
+
+                    var resolvedFocusOrig = state.focusedOriginalStepIndex
+                    var resolvedPendingFocus = state.pendingFocusStepIndex
+                    if (state.pendingFocusStepIndex != null && newSteps.isNotEmpty()) {
+                        val resolved = resolveStepIndexForFocus(
+                            newSteps,
+                            state.pendingFocusStepIndex,
+                            pendingFocusIsTranscriptStepIndex
+                        )
+                        pendingFocusIsTranscriptStepIndex = false
+                        resolvedFocusOrig = resolved
+                        resolvedPendingFocus = resolved
+                    }
+
                     state.copy(
                         steps = newSteps,
                         conversationId = targetCid ?: state.conversationId,
-                        isGenerating = stillGenerating
+                        isGenerating = stillGenerating,
+                        focusedOriginalStepIndex = resolvedFocusOrig,
+                        pendingFocusStepIndex = resolvedPendingFocus
                     )
                 }
             }
@@ -497,19 +935,39 @@ class ChatViewModel @Inject constructor(
             }
             is InboundMessage.HistoryList -> {
                 android.util.Log.d("ChatViewModel", "Received HISTORY_LIST with ${message.conversations.size} conversations")
+                message.conversations.forEach { summary ->
+                    richSummaryMap[summary.id] = mergeSummaryWithRich(summary)
+                }
+                rebuildHistoryFromMap()
                 viewModelScope.launch(Dispatchers.IO) {
                     try {
                         message.conversations.forEach { summary ->
+                            val merged = richSummaryMap[summary.id] ?: summary
                             val existing = appDao.getConversation(summary.id)
                             if (existing == null) {
-                                appDao.insertConversation(ConversationEntity(id = summary.id, title = summary.title, timestamp = summary.timestamp, agentId = message.agentId ?: "antigravity"))
+                                appDao.insertConversation(
+                                    ConversationEntity(
+                                        id = merged.id,
+                                        title = merged.title.ifBlank { "Chat" },
+                                        timestamp = merged.timestamp,
+                                        agentId = message.agentId ?: "antigravity",
+                                        stepCount = merged.stepCount
+                                    )
+                                )
+                            } else if (merged.title.isNotBlank() && merged.title != "Chat") {
+                                appDao.insertConversation(
+                                    existing.copy(
+                                        title = merged.title,
+                                        timestamp = maxOf(existing.lastModified, merged.timestamp),
+                                        stepCount = maxOf(existing.stepCount, merged.stepCount)
+                                    )
+                                )
                             }
                         }
                     } catch (e: Exception) {
                         android.util.Log.e("ChatViewModel", "HistoryList DB insert error", e)
                     }
                 }
-                _uiState.update { it.copy(history = message.conversations) }
                 // Auto-select latest conversation if none active yet
                 if (_uiState.value.conversationId == null && !_uiState.value.isGenerating && message.conversations.isNotEmpty()) {
                     subscribeConversation(message.conversations.first().id)
@@ -628,6 +1086,8 @@ class ChatViewModel @Inject constructor(
         val imageUri = _uiState.value.selectedImageUri
         val textToSend = text.ifBlank { "Attached an image." }
         val targetConversationId = _uiState.value.conversationId ?: "new"
+        val modelToSend = _uiState.value.selectedModel.ifBlank { "default" }
+        val sourceToSend = richSummaryMap[targetConversationId]?.source ?: ""
         
         // Optimistically add user step
         _uiState.update { state ->
@@ -668,6 +1128,8 @@ class ChatViewModel @Inject constructor(
                             text = textToSend,
                             images = listOf(dataUri),
                             conversationId = targetConversationId,
+                            model = modelToSend,
+                            source = sourceToSend,
                             agentId = activeAgentId
                         ))
                         
@@ -691,6 +1153,8 @@ class ChatViewModel @Inject constructor(
             webSocket.sendMessage(OutboundMessage.SendMessage(
                 text = textToSend,
                 conversationId = targetConversationId,
+                model = modelToSend,
+                source = sourceToSend,
                 agentId = activeAgentId
             ))
         }
@@ -700,31 +1164,85 @@ class ChatViewModel @Inject constructor(
         pollingJob?.cancel()
         lastStepIndex = -1
         pendingFullRefresh = false
-        _uiState.update { it.copy(steps = emptyList(), conversationId = "new", isGenerating = false, error = null) }
+        pendingFocusIsTranscriptStepIndex = false
+        _uiState.update {
+            it.copy(
+                steps = emptyList(),
+                conversationId = "new",
+                isGenerating = false,
+                error = null,
+                selectedModel = "default",
+                conversationModel = "",
+                focusedOriginalStepIndex = null,
+                pendingFocusStepIndex = null,
+                showConversationPickerSheet = false,
+                showPromptsSheet = false
+            )
+        }
         val agentId = _uiState.value.activeAgentId ?: "antigravity"
         webSocket.sendMessage(OutboundMessage.NewConversation(agentId = agentId))
         requestHistory() // Refresh history after starting new conversation
     }
 
-    fun subscribeConversation(id: String) {
+    fun subscribeConversation(id: String, targetFocusStepIndex: Int? = null) {
         viewModelScope.launch {
             lastStepIndex = -1
             pendingFullRefresh = true
 
-            // Instantly load cached steps from Room to support offline viewing
-            val cachedSteps = withContext(Dispatchers.IO) {
-                appDao.getStepsForConversation(id)
-            }
-
-            val initialSteps = mutableListOf<TrajectoryStep>()
-            cachedSteps.forEach { entity ->
-                while (initialSteps.size < entity.stepIndex) {
-                    initialSteps.add(TrajectoryStep(case = "unknown", value = "..."))
+            // Instantly load cached steps and scroll position from Room to support offline viewing
+            val cachedConv = withContext(Dispatchers.IO) {
+                try {
+                    appDao.getConversation(id)
+                } catch (t: Throwable) {
+                    android.util.Log.w("ChatViewModel", "getConversation error: ${t.message}")
+                    null
                 }
-                initialSteps.add(entity.toTrajectoryStep())
+            }
+            val cachedEntities = withContext(Dispatchers.IO) {
+                try {
+                    appDao.getStepsForConversation(id)
+                } catch (t: Throwable) {
+                    android.util.Log.w("ChatViewModel", "getStepsForConversation error: ${t.message}")
+                    emptyList()
+                }
             }
 
-            _uiState.update { it.copy(steps = initialSteps, conversationId = id, isGenerating = false, error = null) }
+            val initialSteps = cachedEntities
+                .sortedBy { it.stepIndex }
+                .mapNotNull { entity ->
+                    try {
+                        entity.toTrajectoryStep().copy(stepIndex = entity.stepIndex)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+
+            val resolvedInitialFocus = if (targetFocusStepIndex != null && initialSteps.isNotEmpty()) {
+                val res = resolveStepIndexForFocus(initialSteps, targetFocusStepIndex, pendingFocusIsTranscriptStepIndex)
+                pendingFocusIsTranscriptStepIndex = false
+                res
+            } else {
+                targetFocusStepIndex
+            }
+
+            val convModel = richSummaryMap[id]?.model ?: ""
+
+            _uiState.update {
+                it.copy(
+                    steps = initialSteps,
+                    conversationId = id,
+                    isGenerating = false,
+                    error = null,
+                    selectedModel = "default",
+                    conversationModel = convModel,
+                    showConversationPickerSheet = false,
+                    showPromptsSheet = false,
+                    focusedOriginalStepIndex = resolvedInitialFocus,
+                    pendingFocusStepIndex = resolvedInitialFocus,
+                    initialScrollIndex = cachedConv?.scrollIndex ?: 0,
+                    initialScrollOffset = cachedConv?.scrollOffset ?: 0
+                )
+            }
 
             // Fetch full transcript from server and start incremental polling
             webSocket.sendMessage(OutboundMessage.SubscribeConversation(
@@ -746,7 +1264,11 @@ class ChatViewModel @Inject constructor(
         _uiState.value.conversationId?.let { cid ->
             viewModelScope.launch {
                 val cached = withContext(Dispatchers.IO) {
-                    appDao.getArtifactsForConversation(cid)
+                    try {
+                        appDao.getArtifactsForConversation(cid)
+                    } catch (_: Throwable) {
+                        emptyList()
+                    }
                 }
                 if (cached.isNotEmpty()) {
                     val converted = cached.map { 
@@ -763,7 +1285,11 @@ class ChatViewModel @Inject constructor(
         _uiState.value.conversationId?.let { cid ->
             viewModelScope.launch {
                 val existing = withContext(Dispatchers.IO) {
-                    appDao.getArtifact(cid, path)
+                    try {
+                        appDao.getArtifact(cid, path)
+                    } catch (_: Throwable) {
+                        null
+                    }
                 }
                 val compressedContent = existing?.compressedContent
                 if (compressedContent != null) {
@@ -814,9 +1340,12 @@ class ChatViewModel @Inject constructor(
         _uiState.update { it.copy(activeAgentId = agentId) }
         startNewConversation()
         viewModelScope.launch(Dispatchers.IO) {
-            val localHistory = appDao.getConversationsForAgentFlow(agentId).firstOrNull() ?: emptyList()
-            val summaries = localHistory.map { dev.saifmukhtar.antimatter.core.network.ConversationSummary(id = it.id, timestamp = it.timestamp, title = it.title) }
-            _uiState.update { it.copy(history = summaries) }
+            val localHistory = try {
+                appDao.getConversationsForAgentFlow(agentId).catch { emit(emptyList()) }.firstOrNull() ?: emptyList()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            rebuildHistoryFromMap(localHistory)
         }
     }
 
@@ -850,8 +1379,12 @@ class ChatViewModel @Inject constructor(
 
     suspend fun getScrollState(id: String): Pair<Int, Int> {
         return withContext(Dispatchers.IO) {
-            val conv = appDao.getConversation(id)
-            Pair(conv?.scrollIndex ?: 0, conv?.scrollOffset ?: 0)
+            try {
+                val conv = appDao.getConversation(id)
+                Pair(conv?.scrollIndex ?: 0, conv?.scrollOffset ?: 0)
+            } catch (_: Throwable) {
+                Pair(0, 0)
+            }
         }
     }
 

@@ -19,6 +19,8 @@ import android.os.PowerManager
 import android.net.wifi.WifiManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import android.content.pm.ServiceInfo
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -51,14 +53,32 @@ class BridgeService : Service() {
             // Acquire WakeLocks to prevent CPU and Wi-Fi from sleeping while connected
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Antimatter::BridgeWakeLock")
-            wakeLock?.acquire()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to create wakeLock: ${e.message}")
+        }
 
+        try {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             @Suppress("DEPRECATION")
             wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Antimatter::BridgeWifiLock")
-            wifiLock?.acquire()
         } catch (e: Exception) {
-            Log.w("BridgeService", "Failed to acquire wake/wifi locks: ${e.message}")
+            Log.w(TAG, "Failed to create wifiLock: ${e.message}")
+        }
+
+        try {
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(10 * 60 * 1000L /* 10 minutes fallback */)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wakeLock: ${e.message}")
+        }
+
+        try {
+            if (wifiLock?.isHeld == false) {
+                wifiLock?.acquire()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wifiLock: ${e.message}")
         }
         
         serviceScope.launch {
@@ -84,27 +104,38 @@ class BridgeService : Service() {
 
     override fun onDestroy() {
         serviceScope.cancel()
-        try {
-            wakeLock?.takeIf { it.isHeld }?.release()
-            wifiLock?.takeIf { it.isHeld }?.release()
-        } catch (e: Exception) {
-            // Ignore release exceptions
-        }
+        releaseLocks()
         super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val statusText = when {
-            intent?.action == "ACTION_DISCONNECT" || intent?.action == "ACTION_STOP" -> "Disconnecting..."
+            intent?.action == ACTION_DISCONNECT || intent?.action == ACTION_STOP -> "Disconnecting..."
             intent == null -> "Reconnecting to Antigravity..."
             else -> "Connected to Antigravity IDE"
         }
         promoteToForeground(statusText)
 
-        if (intent?.action == "ACTION_DISCONNECT" || intent?.action == "ACTION_STOP") {
+        if (intent?.action == ACTION_DISCONNECT || intent?.action == ACTION_STOP) {
             webSocket.disconnect()
             stopServiceSafely()
             return START_NOT_STICKY
+        }
+
+        try {
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(10 * 60 * 1000L /* 10 minutes fallback */)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wakeLock: ${e.message}")
+        }
+
+        try {
+            if (wifiLock?.isHeld == false) {
+                wifiLock?.acquire()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wifiLock: ${e.message}")
         }
 
         if (webSocket.connectionState.value == BridgeWebSocket.ConnectionState.DISCONNECTED) {
@@ -114,30 +145,50 @@ class BridgeService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun buildNotification(text: String): Notification {
+        val disconnectIntent = PendingIntent.getService(
+            this, 0,
+            Intent(this, BridgeService::class.java).apply { action = ACTION_DISCONNECT },
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, "bridge_channel")
+            .setContentTitle("Antimatter Bridge")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", disconnectIntent)
+            .setOngoing(true)
+            .build()
+    }
+
     private fun promoteToForeground(statusText: String) {
         try {
-            val disconnectIntent = PendingIntent.getService(
-                this, 0,
-                Intent(this, BridgeService::class.java).apply { action = "ACTION_DISCONNECT" },
-                PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val notification = NotificationCompat.Builder(this, "bridge_channel")
-                .setContentTitle("Antimatter Bridge")
-                .setContentText(statusText)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", disconnectIntent)
-                .setOngoing(true)
-                .build()
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             } else {
-                startForeground(1, notification)
+                0
             }
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(statusText), type)
             isForegroundPromoted = true
         } catch (e: Exception) {
-            Log.w("BridgeService", "Unable to start foreground service: ${e.message}")
+            Log.e(TAG, "Failed to promote foreground service", e)
+        }
+    }
+
+    private fun releaseLocks() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release wakeLock: ${e.message}")
+        }
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release wifiLock: ${e.message}")
         }
     }
 
@@ -145,6 +196,7 @@ class BridgeService : Service() {
         if (!isForegroundPromoted) {
             promoteToForeground("Disconnected")
         }
+        releaseLocks()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -153,12 +205,12 @@ class BridgeService : Service() {
                 stopForeground(true)
             }
         } catch (e: Exception) {
-            Log.w("BridgeService", "Unable to stop foreground: ${e.message}")
+            Log.w(TAG, "Unable to stop foreground: ${e.message}")
         }
         try {
             stopSelf()
         } catch (e: Exception) {
-            Log.w("BridgeService", "Unable to stopSelf: ${e.message}")
+            Log.w(TAG, "Unable to stopSelf: ${e.message}")
         }
     }
 
@@ -205,5 +257,36 @@ class BridgeService : Service() {
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(System.currentTimeMillis().toInt(), notification)
+    }
+
+    companion object {
+        private const val TAG = "BridgeService"
+        const val NOTIFICATION_ID = 1
+        const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_DISCONNECT = "ACTION_DISCONNECT"
+
+        fun start(context: Context) {
+            try {
+                val intent = Intent(context, BridgeService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    ContextCompat.startForegroundService(context, intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot start BridgeService from current lifecycle state: ${e.message}")
+            }
+        }
+
+        fun stop(context: Context) {
+            try {
+                val intent = Intent(context, BridgeService::class.java).apply {
+                    action = ACTION_STOP
+                }
+                context.startService(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot stop BridgeService from current lifecycle state: ${e.message}")
+            }
+        }
     }
 }

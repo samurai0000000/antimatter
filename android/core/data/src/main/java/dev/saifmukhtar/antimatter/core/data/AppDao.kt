@@ -1,3 +1,9 @@
+/*
+ * AppDao.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.core.data
 
 import androidx.room.*
@@ -26,6 +32,9 @@ interface AppDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertConversation(conversation: ConversationEntity)
+
+    @Query("UPDATE conversations SET title = :title, timestamp = :timestamp, stepCount = :stepCount WHERE id = :id")
+    suspend fun updateConversationMetadata(id: String, title: String, timestamp: Long, stepCount: Int)
 
     @Query("UPDATE conversations SET scrollIndex = :index, scrollOffset = :offset WHERE id = :id")
     suspend fun updateScrollState(id: String, index: Int, offset: Int)

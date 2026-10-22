@@ -88,6 +88,9 @@ class BridgeWebSocket(private val context: Context) {
         _connectionState.update { newState }
         if (prevState == newState) return
 
+        // In HTTP mode, AimonSseService is already the dedicated foreground service.
+        if (isHttpMode()) return
+
         if (newState == ConnectionState.CONNECTED) {
             try {
                 val intent = Intent(context, BridgeService::class.java)
@@ -191,27 +194,7 @@ class BridgeWebSocket(private val context: Context) {
                         _messages.emit(agentsMsg)
 
                         // Also fetch conversations / history
-                        try {
-                            val histReq = Request.Builder()
-                                .url("$targetUrl/api/agent/conversations")
-                                .header("User-Agent", "aimon-mobile/1.0")
-                                .apply {
-                                    if (!token.isNullOrBlank()) {
-                                        header("X-Mobile-Token", token!!)
-                                        header("Authorization", "Bearer $token")
-                                    }
-                                }
-                                .get()
-                                .build()
-                            val histResp = client.newCall(histReq).execute()
-                            val histBody = histResp.body?.string() ?: ""
-                            if (histResp.isSuccessful) {
-                                val histMsg = gson.fromJson(histBody, InboundMessage.HistoryList::class.java)
-                                _messages.emit(histMsg)
-                            }
-                        } catch (e: Exception) {
-                            Log.w("BridgeWebSocket", "Failed to fetch initial history", e)
-                        }
+                        fetchHttpConversations("")
                     } else {
                         Log.e("BridgeWebSocket", "HTTP Bridge connection failed with code: ${resp.code}")
                         isConnecting.set(false)
@@ -450,13 +433,20 @@ class BridgeWebSocket(private val context: Context) {
                     when (message) {
                         is OutboundMessage.SendMessage -> {
                             val reqCid = message.conversationId?.takeIf { it.isNotBlank() } ?: "new"
-                            val reqBody = gson.toJson(mapOf(
+                            val payloadMap = mutableMapOf<String, Any>(
                                 "text" to message.text,
                                 "prompt" to message.text,
                                 "conversationId" to reqCid,
                                 "agentId" to (message.agentId ?: "antigravity"),
                                 "images" to (message.images ?: emptyList<String>())
-                            ))
+                            )
+                            if (message.model.isNotBlank()) {
+                                payloadMap["model"] = message.model
+                            }
+                            if (message.source.isNotBlank()) {
+                                payloadMap["source"] = message.source
+                            }
+                            val reqBody = gson.toJson(payloadMap)
                             val req = Request.Builder()
                                 .url("$url/api/agent/prompt")
                                 .header("User-Agent", "aimon-mobile/1.0")
@@ -507,27 +497,7 @@ class BridgeWebSocket(private val context: Context) {
                                 }
 
                                 // Refresh history list
-                                try {
-                                    val histReq = Request.Builder()
-                                        .url("$url/api/agent/conversations")
-                                        .header("User-Agent", "aimon-mobile/1.0")
-                                        .apply {
-                                            if (!token.isNullOrBlank()) {
-                                                header("X-Mobile-Token", token!!)
-                                                header("Authorization", "Bearer $token")
-                                            }
-                                        }
-                                        .get()
-                                        .build()
-                                    val histResp = client.newCall(histReq).execute()
-                                    val histBody = histResp.body?.string() ?: ""
-                                    if (histResp.isSuccessful) {
-                                        val histMsg = gson.fromJson(histBody, InboundMessage.HistoryList::class.java)
-                                        _messages.emit(histMsg)
-                                    }
-                                } catch (e: Exception) {
-                                    Log.w("BridgeWebSocket", "Failed to refresh history after send", e)
-                                }
+                                fetchHttpConversations("")
                             } else {
                                 val errDetail = try {
                                     val errJson = JsonParser.parseString(body).asJsonObject
@@ -564,23 +534,7 @@ class BridgeWebSocket(private val context: Context) {
                             }
                         }
                         is OutboundMessage.GetHistory -> {
-                            val req = Request.Builder()
-                                .url("$url/api/agent/conversations")
-                                .header("User-Agent", "aimon-mobile/1.0")
-                                .apply {
-                                    if (!token.isNullOrBlank()) {
-                                        header("X-Mobile-Token", token!!)
-                                        header("Authorization", "Bearer $token")
-                                    }
-                                }
-                                .get()
-                                .build()
-                            val resp = client.newCall(req).execute()
-                            val body = resp.body?.string() ?: ""
-                            if (resp.isSuccessful) {
-                                val histMsg = gson.fromJson(body, InboundMessage.HistoryList::class.java)
-                                _messages.emit(histMsg)
-                            }
+                            fetchHttpConversations("")
                         }
                         is OutboundMessage.SubscribeConversation -> {
                             val sinceParam = if (message.sinceStepIndex != null && message.sinceStepIndex >= 0) {
@@ -848,6 +802,155 @@ class BridgeWebSocket(private val context: Context) {
             .build()
 
         notificationManager.notify(notificationIdCounter.incrementAndGet(), notification)
+    }
+
+    fun searchHttpConversations(query: String) {
+        if (!isHttpMode()) return
+        scope.launch(Dispatchers.IO) {
+            fetchHttpConversations(query)
+        }
+    }
+
+    private suspend fun fetchHttpConversations(query: String = "") {
+        val base = currentUrl ?: return
+        try {
+            val qParam = if (query.isNotBlank()) {
+                "?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
+            } else {
+                ""
+            }
+            val req = Request.Builder()
+                .url("$base/api/agent/conversations$qParam")
+                .header("User-Agent", "aimon-mobile/1.0")
+                .apply {
+                    if (!token.isNullOrBlank()) {
+                        header("X-Mobile-Token", token!!)
+                        header("Authorization", "Bearer $token")
+                    }
+                }
+                .get()
+                .build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: ""
+            if (resp.isSuccessful && body.isNotBlank()) {
+                val histMsg = parseHistoryListFromJson(body)
+                _messages.emit(histMsg)
+            }
+        } catch (e: Exception) {
+            Log.w("BridgeWebSocket", "Failed to fetch HTTP conversations", e)
+        }
+    }
+
+    private fun parseHistoryListFromJson(body: String): InboundMessage.HistoryList {
+        val parsed = JsonParser.parseString(body)
+        var agentId: String? = "antigravity"
+        val convArray = when {
+            parsed.isJsonObject -> {
+                val root = parsed.asJsonObject
+                agentId = optJsonString(root, "agentId") ?: "antigravity"
+                if (root.has("conversations") && root.get("conversations").isJsonArray) {
+                    root.getAsJsonArray("conversations")
+                } else {
+                    null
+                }
+            }
+            parsed.isJsonArray -> parsed.asJsonArray
+            else -> null
+        }
+
+        val summaries = mutableListOf<ConversationSummary>()
+        if (convArray != null) {
+            for (elem in convArray) {
+                if (!elem.isJsonObject) continue
+                val obj = elem.asJsonObject
+                val id = optJsonString(obj, "id")?.takeIf { it.isNotBlank() } ?: continue
+                val rawTitle = optJsonString(obj, "title") ?: ""
+                val rawTs = optJsonLong(obj, "timestamp", 0L)
+                val timestampMs = when {
+                    rawTs in 1L..9_999_999_999L -> rawTs * 1000L
+                    rawTs > 0L -> rawTs
+                    else -> System.currentTimeMillis()
+                }
+                val source = optJsonString(obj, "source")?.takeIf { it.isNotBlank() } ?: "CLI"
+                val workspace = optJsonString(obj, "workspace") ?: ""
+                val workspacePath = optJsonString(obj, "workspacePath") ?: ""
+                val model = optJsonString(obj, "model") ?: ""
+                val active = optJsonBool(obj, "active", false)
+                val openInTerminal = optJsonBool(obj, "openInTerminal", false)
+                val terminalPts = optJsonString(obj, "terminalPts") ?: ""
+                val stepCount = optJsonInt(obj, "stepCount") ?: 0
+                val firstPrompt = optJsonString(obj, "firstPrompt") ?: ""
+                val lastPrompt = optJsonString(obj, "lastPrompt") ?: ""
+                val lastPromptStepIndex = optJsonInt(obj, "lastPromptStepIndex") ?: -1
+                val matchedPrompt = optJsonString(obj, "matchedPrompt") ?: ""
+                val matchedStepIndex = optJsonInt(obj, "matchedStepIndex") ?: -1
+
+                val prompts = mutableListOf<PromptEntry>()
+                if (obj.has("userPrompts") && obj.get("userPrompts").isJsonArray) {
+                    val pArr = obj.getAsJsonArray("userPrompts")
+                    for (pElem in pArr) {
+                        if (!pElem.isJsonObject) continue
+                        val pObj = pElem.asJsonObject
+                        val pIdx = optJsonInt(pObj, "stepIndex") ?: -1
+                        val pText = optJsonString(pObj, "text") ?: ""
+                        val pTs = optJsonString(pObj, "timestamp") ?: ""
+                        if (pText.isNotBlank()) {
+                            prompts.add(PromptEntry(stepIndex = pIdx, text = pText, timestamp = pTs))
+                        }
+                    }
+                }
+
+                val effectiveTitle = rawTitle.takeIf { it.isNotBlank() }
+                    ?: firstPrompt.takeIf { it.isNotBlank() }?.take(80)
+                    ?: lastPrompt.takeIf { it.isNotBlank() }?.take(80)
+                    ?: "Conversation ${id.take(8)}"
+
+                summaries.add(
+                    ConversationSummary(
+                        id = id,
+                        title = effectiveTitle,
+                        timestamp = timestampMs,
+                        source = source,
+                        workspace = workspace,
+                        workspacePath = workspacePath,
+                        model = model,
+                        active = active,
+                        openInTerminal = openInTerminal,
+                        terminalPts = terminalPts,
+                        stepCount = stepCount,
+                        firstPrompt = firstPrompt,
+                        lastPrompt = lastPrompt,
+                        lastPromptStepIndex = lastPromptStepIndex,
+                        userPrompts = prompts,
+                        matchedPrompt = matchedPrompt,
+                        matchedStepIndex = matchedStepIndex
+                    )
+                )
+            }
+        }
+        return InboundMessage.HistoryList(conversations = summaries, agentId = agentId)
+    }
+
+    private fun optJsonBool(obj: com.google.gson.JsonObject?, key: String, defaultVal: Boolean = false): Boolean {
+        if (obj == null || !obj.has(key)) return defaultVal
+        val el = obj.get(key)
+        if (el == null || el.isJsonNull || !el.isJsonPrimitive) return defaultVal
+        return try {
+            el.asBoolean
+        } catch (_: Exception) {
+            defaultVal
+        }
+    }
+
+    private fun optJsonLong(obj: com.google.gson.JsonObject?, key: String, defaultVal: Long = 0L): Long {
+        if (obj == null || !obj.has(key)) return defaultVal
+        val el = obj.get(key)
+        if (el == null || el.isJsonNull || !el.isJsonPrimitive) return defaultVal
+        return try {
+            el.asLong
+        } catch (_: Exception) {
+            defaultVal
+        }
     }
 
     private fun optJsonString(obj: com.google.gson.JsonObject?, key: String): String? {

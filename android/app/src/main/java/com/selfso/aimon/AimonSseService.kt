@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -33,9 +34,11 @@ import java.util.concurrent.TimeUnit
 class AimonSseService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var sseJob: Job? = null
+    private var streamJob: Job? = null
     @Volatile
     private var isRunning = false
+    private var currentBaseUrl: String = ""
+    private var currentToken: String = ""
 
     private val sseHttpClient = OkHttpClient.Builder()
         .proxy(Proxy.NO_PROXY)
@@ -48,58 +51,101 @@ class AimonSseService : Service() {
     override fun onCreate() {
         super.onCreate()
         notificationManager = AimonNotificationManager(this)
+        promoteToForeground("Initializing Aimon stream...")
+    }
+
+    private fun promoteToForeground(statusText: String) {
+        try {
+            notificationManager.ensureChannels()
+            val notification = NotificationCompat.Builder(this, AimonNotificationManager.CHANNEL_SERVICE)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Aimon Companion")
+                .setContentText(statusText)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .build()
+
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            } else {
+                0
+            }
+            ServiceCompat.startForeground(this, NOTIFICATION_ID_SERVICE, notification, type)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to promote foreground service", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        notificationManager.ensureChannels()
-        val notification = NotificationCompat.Builder(this, AimonNotificationManager.CHANNEL_SERVICE)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("Aimon Companion")
-            .setContentText("Listening for real-time approval and quota events")
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true)
-            .build()
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID_SERVICE,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
-            } else {
-                startForeground(NOTIFICATION_ID_SERVICE, notification)
+        if (intent?.action == ACTION_STOP) {
+            promoteToForeground("Stopping Aimon stream...")
+            isRunning = false
+            streamJob?.cancel()
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to stop foreground: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w("AimonSseService", "Could not startForeground: ${e.message}")
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         val intentBaseUrl = intent?.getStringExtra(EXTRA_BASE_URL)
         val intentToken = intent?.getStringExtra(EXTRA_TOKEN)
-        if (!intentBaseUrl.isNullOrBlank() || !intentToken.isNullOrBlank()) {
-            val prefs = getSharedPreferences(AimonNotificationManager.PREFS_NAME, Context.MODE_PRIVATE)
-            val editor = prefs.edit()
-            if (!intentBaseUrl.isNullOrBlank()) {
-                editor.putString("base_url", intentBaseUrl.trimEnd('/'))
-            }
-            if (!intentToken.isNullOrBlank()) {
-                editor.putString("mobile_token", intentToken)
-                editor.putString("token", intentToken)
-            }
-            editor.apply()
+        val prefs = try {
+            getSharedPreferences(AimonNotificationManager.PREFS_NAME, Context.MODE_PRIVATE)
+        } catch (_: Exception) {
+            null
         }
 
-        if (!isRunning || sseJob?.isActive != true) {
-            isRunning = true
-            startSseLoop()
+        if (!intentBaseUrl.isNullOrBlank() || !intentToken.isNullOrBlank()) {
+            prefs?.edit()?.apply {
+                if (!intentBaseUrl.isNullOrBlank()) putString("base_url", intentBaseUrl.trimEnd('/'))
+                if (!intentToken.isNullOrBlank()) {
+                    putString("mobile_token", intentToken)
+                    putString("token", intentToken)
+                }
+                apply()
+            }
         }
+
+        val rawUrl = intentBaseUrl?.takeIf { it.isNotBlank() }
+            ?: prefs?.getString("base_url", null)?.takeIf { it.isNotBlank() }
+            ?: AimonViewModel.currentBaseUrl
+        val baseUrl = rawUrl.trimEnd('/')
+        val token = intentToken?.takeIf { it.isNotBlank() }
+            ?: prefs?.getString("mobile_token", null)?.takeIf { it.isNotBlank() }
+            ?: prefs?.getString("token", null)?.takeIf { it.isNotBlank() }
+            ?: AimonViewModel.currentMobileToken
+
+        if (baseUrl.isBlank()) {
+            promoteToForeground("Aimon: waiting for server URL...")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (baseUrl == currentBaseUrl && token == currentToken && streamJob?.isActive == true) {
+            promoteToForeground("Listening for real-time approval and quota events")
+            return START_STICKY
+        }
+
+        currentBaseUrl = baseUrl
+        currentToken = token
+        isRunning = true
+        startSseLoop()
+        promoteToForeground("Listening for real-time approval and quota events")
 
         return START_STICKY
     }
 
     private fun startSseLoop() {
-        sseJob?.cancel()
-        sseJob = serviceScope.launch {
+        streamJob?.cancel()
+        streamJob = serviceScope.launch {
             while (isActive && isRunning) {
                 val prefs = try {
                     getSharedPreferences(AimonNotificationManager.PREFS_NAME, Context.MODE_PRIVATE)
@@ -149,11 +195,11 @@ class AimonSseService : Service() {
                                 }
                             }
                         } else {
-                            Log.w("AimonSseService", "SSE connection returned HTTP ${response.code}")
+                            Log.w(TAG, "SSE connection returned HTTP ${response.code}")
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w("AimonSseService", "SSE stream disconnected: ${e.message}")
+                    Log.w(TAG, "SSE stream disconnected: ${e.message}")
                 }
 
                 delay(3000)
@@ -163,7 +209,7 @@ class AimonSseService : Service() {
 
     override fun onDestroy() {
         isRunning = false
-        sseJob?.cancel()
+        streamJob?.cancel()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -171,6 +217,8 @@ class AimonSseService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val TAG = "AimonSseService"
+        const val ACTION_STOP = "com.selfso.aimon.ACTION_STOP"
         const val NOTIFICATION_ID_SERVICE = 1002
         const val EXTRA_BASE_URL = "EXTRA_BASE_URL"
         const val EXTRA_TOKEN = "EXTRA_TOKEN"
@@ -187,7 +235,18 @@ class AimonSseService : Service() {
                     context.startService(intent)
                 }
             } catch (e: Exception) {
-                Log.w("AimonSseService", "Failed to start AimonSseService: ${e.message}")
+                Log.w(TAG, "Cannot start/stop AimonSseService from current lifecycle state: ${e.message}")
+            }
+        }
+
+        fun stop(context: Context) {
+            try {
+                val intent = Intent(context, AimonSseService::class.java).apply {
+                    action = ACTION_STOP
+                }
+                context.startService(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot start/stop AimonSseService from current lifecycle state: ${e.message}")
             }
         }
 

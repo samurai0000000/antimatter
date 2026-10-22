@@ -1,3 +1,9 @@
+/*
+ * ConversationEntity.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.core.data
 
 import androidx.room.Entity
@@ -12,4 +18,6 @@ data class ConversationEntity(
     val scrollIndex: Int = 0,
     val scrollOffset: Int = 0,
     val stepCount: Int = 0
-)
+) {
+    val lastModified: Long get() = timestamp
+}

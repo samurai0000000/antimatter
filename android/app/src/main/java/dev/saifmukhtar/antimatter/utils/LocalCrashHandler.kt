@@ -18,6 +18,8 @@ import java.util.Locale
 import android.os.Build
 import android.content.Intent
 import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import androidx.core.content.FileProvider
 
 class LocalCrashHandler(
@@ -140,26 +142,39 @@ class LocalCrashHandler(
             
             // Get the most recent file
             val latestLog = files.maxByOrNull { it.lastModified() } ?: return
-            
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", latestLog)
-            
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "Antimatter Crash Log")
-                putExtra(Intent.EXTRA_TEXT, "Please find the attached crash log from the Antimatter Android app.")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                clipData = ClipData.newRawUri("Crash Log", uri)
+
+            try {
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", latestLog)
+                
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "Antimatter Crash Log")
+                    putExtra(Intent.EXTRA_TEXT, "Please find the attached crash log from the Antimatter Android app.")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    clipData = ClipData.newRawUri("Crash Log", uri)
+                }
+                
+                context.startActivity(Intent.createChooser(intent, "Share Crash Log").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                
+                // Delay deletion by 60 seconds to ensure the receiving app has time to read the FileProvider URI
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    files.forEach { it.delete() }
+                }, 60000)
+            } catch (e: Exception) {
+                Log.e("LocalCrashHandler", "FileProvider share failed, copying crash log to clipboard: ${e.message}", e)
+                try {
+                    val logContent = latestLog.readText()
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    val clip = ClipData.newPlainText("Crash Log", logContent)
+                    clipboard?.setPrimaryClip(clip)
+                    Toast.makeText(context, "Crash log copied to clipboard", Toast.LENGTH_LONG).show()
+                } catch (clipEx: Exception) {
+                    Log.e("LocalCrashHandler", "Failed to copy crash log to clipboard: ${clipEx.message}", clipEx)
+                }
             }
-            
-            context.startActivity(Intent.createChooser(intent, "Share Crash Log").apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            })
-            
-            // Delay deletion by 60 seconds to ensure the receiving app has time to read the FileProvider URI
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                files.forEach { it.delete() }
-            }, 60000)
         }
 
         fun clearCrashLogs(context: Context) {

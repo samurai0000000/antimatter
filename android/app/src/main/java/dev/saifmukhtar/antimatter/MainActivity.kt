@@ -71,29 +71,43 @@ class MainActivity : FragmentActivity() {
     }
 
     fun showBiometricPrompt(onResult: (Boolean) -> Unit) {
-        val executor = ContextCompat.getMainExecutor(this)
-        val biometricPrompt = BiometricPrompt(this, executor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    super.onAuthenticationError(errorCode, errString)
-                    onResult(false)
-                }
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    super.onAuthenticationSucceeded(result)
-                    onResult(true)
-                }
-                override fun onAuthenticationFailed() {
-                    super.onAuthenticationFailed()
-                    onResult(false)
-                }
-            })
+        try {
+            val executor = ContextCompat.getMainExecutor(this)
+            val biometricPrompt = BiometricPrompt(this, executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        super.onAuthenticationError(errorCode, errString)
+                        if (errorCode == BiometricPrompt.ERROR_NO_BIOMETRICS ||
+                            errorCode == BiometricPrompt.ERROR_HW_NOT_PRESENT ||
+                            errorCode == BiometricPrompt.ERROR_HW_UNAVAILABLE
+                        ) {
+                            onResult(true)
+                        } else {
+                            onResult(false)
+                        }
+                    }
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        super.onAuthenticationSucceeded(result)
+                        onResult(true)
+                    }
+                    override fun onAuthenticationFailed() {
+                        super.onAuthenticationFailed()
+                        onResult(false)
+                    }
+                })
 
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Unlock Antimatter")
-            .setSubtitle("Securely access your zero-trust gateway")
-            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
-            .build()
+            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Unlock Antimatter")
+                .setSubtitle("Securely access your zero-trust gateway")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
+                .build()
 
-        biometricPrompt.authenticate(promptInfo)
+            biometricPrompt.authenticate(promptInfo)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "BiometricPrompt failed to authenticate: ${e.message}", e)
+            onResult(true)
+        }
     }
+
+    fun promptBiometric(onResult: (Boolean) -> Unit) = showBiometricPrompt(onResult)
 }

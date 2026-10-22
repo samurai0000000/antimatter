@@ -2,6 +2,7 @@ package dev.saifmukhtar.antimatter.core.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.gson.Gson
@@ -28,22 +29,73 @@ data class GatewayProfile(
 class UserPreferencesRepository(private val context: Context) {
 
     companion object {
+        private const val TAG = "UserPreferencesRepo"
         const val PROFILES_JSON = "profiles_json"
         const val ACTIVE_PROFILE_ID = "active_profile_id"
         const val DB_PASSPHRASE = "db_passphrase"
+        private const val SECURE_PREFS_NAME = "secure_prefs"
+        private const val ALT_SECURE_PREFS_NAME = "antimatter_secure_prefs"
+        private const val FALLBACK_PREFS_NAME = "antimatter_fallback_prefs"
     }
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    private val securePrefs: SharedPreferences = createResilientPrefs(context)
 
-    private val securePrefs: SharedPreferences = EncryptedSharedPreferences.create(
-        context,
-        "secure_prefs",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    private fun createResilientPrefs(context: Context): SharedPreferences {
+        fun buildEncrypted(name: String): SharedPreferences {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            return EncryptedSharedPreferences.create(
+                context,
+                name,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
+
+        val primary = try {
+            buildEncrypted(SECURE_PREFS_NAME)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to initialize EncryptedSharedPreferences($SECURE_PREFS_NAME), resetting storage and retrying: ${t.message}")
+            try {
+                context.deleteSharedPreferences(SECURE_PREFS_NAME)
+            } catch (delEx: Exception) {
+                Log.w(TAG, "Failed to delete corrupted SharedPreferences: ${delEx.message}")
+            }
+
+            try {
+                buildEncrypted(SECURE_PREFS_NAME)
+            } catch (retryThrowable: Throwable) {
+                Log.e(TAG, "EncryptedSharedPreferences retry failed, falling back to unencrypted SharedPreferences: ${retryThrowable.message}")
+                context.getSharedPreferences(FALLBACK_PREFS_NAME, Context.MODE_PRIVATE)
+            }
+        }
+
+        // Recover any profiles saved in antimatter_secure_prefs if primary has none
+        try {
+            if (primary.getString(PROFILES_JSON, null).isNullOrBlank()) {
+                val alt = buildEncrypted(ALT_SECURE_PREFS_NAME)
+                val altProfiles = alt.getString(PROFILES_JSON, null)
+                val altActive = alt.getString(ACTIVE_PROFILE_ID, null)
+                val altPass = alt.getString(DB_PASSPHRASE, null)
+                val editor = primary.edit()
+                if (!altProfiles.isNullOrBlank()) {
+                    editor.putString(PROFILES_JSON, altProfiles)
+                }
+                if (!altActive.isNullOrBlank()) {
+                    editor.putString(ACTIVE_PROFILE_ID, altActive)
+                }
+                if (primary.getString(DB_PASSPHRASE, null).isNullOrBlank() && !altPass.isNullOrBlank()) {
+                    editor.putString(DB_PASSPHRASE, altPass)
+                }
+                editor.apply()
+            }
+        } catch (_: Throwable) {
+        }
+
+        return primary
+    }
 
     private val gson = Gson()
 
@@ -60,17 +112,28 @@ class UserPreferencesRepository(private val context: Context) {
 
     init {
         scope.launch {
-            loadProfiles()
-            migrateLegacyCredentials()
-            _isLoadedFlow.value = true
+            try {
+                loadProfiles()
+                migrateLegacyCredentials()
+                recoverFromAimonPrefsIfNeeded()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error loading user preferences: ${e.message}")
+            } finally {
+                _isLoadedFlow.value = true
+            }
         }
     }
 
     private fun loadProfiles() {
         val json = securePrefs.getString(PROFILES_JSON, null)
-        val profiles = if (json != null) {
-            val type = object : TypeToken<List<GatewayProfile>>() {}.type
-            gson.fromJson<List<GatewayProfile>>(json, type)
+        val profiles = if (!json.isNullOrBlank()) {
+            try {
+                val type = object : TypeToken<List<GatewayProfile>>() {}.type
+                gson.fromJson<List<GatewayProfile>>(json, type) ?: emptyList()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to parse profiles JSON: ${e.message}")
+                emptyList()
+            }
         } else {
             emptyList()
         }
@@ -108,6 +171,22 @@ class UserPreferencesRepository(private val context: Context) {
                 .remove("auth_token")
                 .remove("pub_key")
                 .apply()
+        }
+    }
+
+    private fun recoverFromAimonPrefsIfNeeded() {
+        if (_profilesFlow.value.isNotEmpty() && !_savedCredentialsFlow.value.url.isNullOrBlank()) {
+            return
+        }
+        try {
+            val aimonPrefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE)
+            val storedUrl = aimonPrefs.getString("base_url", null)?.takeIf { it.isNotBlank() }
+            val storedToken = aimonPrefs.getString("mobile_token", null)?.takeIf { it.isNotBlank() }
+                ?: aimonPrefs.getString("token", null)?.takeIf { it.isNotBlank() }
+            if (!storedUrl.isNullOrBlank() && !storedToken.isNullOrBlank()) {
+                saveProfile("aimon", Credentials(storedUrl, null, null, storedToken, null))
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -187,14 +266,26 @@ class UserPreferencesRepository(private val context: Context) {
     }
 
     fun getDatabasePassphrase(): ByteArray {
-        var passphrase = securePrefs.getString(DB_PASSPHRASE, null)
-        if (passphrase == null) {
-            val secureRandom = SecureRandom()
-            val key = ByteArray(32) // 256 bits
-            secureRandom.nextBytes(key)
-            passphrase = Base64.encodeToString(key, Base64.NO_WRAP)
-            securePrefs.edit().putString(DB_PASSPHRASE, passphrase).apply()
+        return try {
+            var passphrase = securePrefs.getString(DB_PASSPHRASE, null)
+            if (passphrase.isNullOrBlank()) {
+                val secureRandom = SecureRandom()
+                val key = ByteArray(32) // 256 bits
+                secureRandom.nextBytes(key)
+                passphrase = Base64.encodeToString(key, Base64.NO_WRAP)
+                securePrefs.edit().putString(DB_PASSPHRASE, passphrase).apply()
+            }
+            Base64.decode(passphrase, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to decode DB passphrase, regenerating: ${e.message}")
+            val key = ByteArray(32)
+            SecureRandom().nextBytes(key)
+            val encoded = Base64.encodeToString(key, Base64.NO_WRAP)
+            try {
+                securePrefs.edit().putString(DB_PASSPHRASE, encoded).apply()
+            } catch (_: Exception) {
+            }
+            key
         }
-        return Base64.decode(passphrase, Base64.NO_WRAP)
     }
 }

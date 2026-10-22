@@ -1,9 +1,13 @@
 package dev.saifmukhtar.antimatter.core.data
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import net.sqlcipher.database.SQLiteDatabase
 import net.sqlcipher.database.SupportFactory
 
 @Database(
@@ -116,16 +120,80 @@ abstract class AppDatabase : RoomDatabase() {
          */
         fun getDatabase(context: Context, passphrase: ByteArray): AppDatabase {
             return INSTANCE ?: synchronized(this) {
-                val factory = SupportFactory(passphrase)
+                val appCtx = context.applicationContext
+                try {
+                    SQLiteDatabase.loadLibs(appCtx)
+                } catch (t: Throwable) {
+                    Log.w("AppDatabase", "SQLiteDatabase.loadLibs warning: ${t.message}")
+                }
+
+                val keyCopy = passphrase.clone()
+                val resilientFactory = SupportSQLiteOpenHelper.Factory { config ->
+                    object : SupportSQLiteOpenHelper {
+                        @Volatile
+                        private var delegate: SupportSQLiteOpenHelper =
+                            SupportFactory(keyCopy.clone(), null, false).create(config)
+
+                        override val databaseName: String?
+                            get() = delegate.databaseName
+
+                        override fun setWriteAheadLoggingEnabled(enabled: Boolean) {
+                            try {
+                                delegate.setWriteAheadLoggingEnabled(enabled)
+                            } catch (t: Throwable) {
+                                Log.w("AppDatabase", "setWriteAheadLoggingEnabled failed: ${t.message}")
+                            }
+                        }
+
+                        override val writableDatabase: SupportSQLiteDatabase
+                            get() = try {
+                                delegate.writableDatabase
+                            } catch (t: Throwable) {
+                                Log.e("AppDatabase", "SQLCipher writableDatabase open failed (${t.message}); resetting antimatter_database", t)
+                                resetAndRecreate().writableDatabase
+                            }
+
+                        override val readableDatabase: SupportSQLiteDatabase
+                            get() = try {
+                                delegate.readableDatabase
+                            } catch (t: Throwable) {
+                                Log.e("AppDatabase", "SQLCipher readableDatabase open failed (${t.message}); resetting antimatter_database", t)
+                                resetAndRecreate().readableDatabase
+                            }
+
+                        @Synchronized
+                        private fun resetAndRecreate(): SupportSQLiteOpenHelper {
+                            try {
+                                delegate.close()
+                            } catch (_: Throwable) {
+                            }
+                            try {
+                                appCtx.deleteDatabase("antimatter_database")
+                            } catch (delErr: Throwable) {
+                                Log.w("AppDatabase", "deleteDatabase failed: ${delErr.message}")
+                            }
+                            delegate = SupportFactory(keyCopy.clone(), null, false).create(config)
+                            return delegate
+                        }
+
+                        override fun close() {
+                            try {
+                                delegate.close()
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                }
 
                 val instance = Room.databaseBuilder(
-                    context.applicationContext,
+                    appCtx,
                     AppDatabase::class.java,
                     "antimatter_database"
                 )
-                .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
-                .build()
+                    .openHelperFactory(resilientFactory)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .fallbackToDestructiveMigration()
+                    .build()
                 INSTANCE = instance
                 instance
             }

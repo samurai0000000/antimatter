@@ -49,6 +49,8 @@ data class TrajectoryStep(
     @SerializedName("stepIndex") val stepIndex: Int = -1
 ) {
     val stepCase: StepCase get() = StepCase.from(case)
+    val toolName: String? get() = tool
+    val thinkingText: String? get() = thinking
 
     /** Human-readable display text for this step */
     val displayText: String
@@ -135,6 +137,8 @@ sealed class InboundMessage {
     object Unknown : InboundMessage()
 }
 
+typealias InboundBridgeMessage = InboundMessage
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  OUTBOUND MESSAGES (Android → PC)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,6 +151,8 @@ sealed class OutboundMessage {
         val text: String,
         val images: List<String>? = null,
         val conversationId: String? = null,
+        val model: String = "default",
+        val source: String = "",
         val type: String = "SEND_MESSAGE",
         override val id: String? = null,
         override val agentId: String? = null
@@ -206,8 +212,28 @@ data class FileNode(
     val children: List<FileNode>? = null
 )
 
+data class PromptEntry(
+    val stepIndex: Int = -1,
+    val text: String = "",
+    val timestamp: String = ""
+)
+
 data class ConversationSummary(
     val id: String = "",
-    val timestamp: Long = 0L,
-    val title: String = ""
+    val title: String = "",
+    val timestamp: Long = System.currentTimeMillis(),
+    val source: String = "CLI",
+    val workspace: String = "",
+    val workspacePath: String = "",
+    val model: String = "",
+    val active: Boolean = false,
+    val openInTerminal: Boolean = false,
+    val terminalPts: String = "",
+    val stepCount: Int = 0,
+    val firstPrompt: String = "",
+    val lastPrompt: String = "",
+    val lastPromptStepIndex: Int = -1,
+    val userPrompts: List<PromptEntry> = emptyList(),
+    val matchedPrompt: String = "",
+    val matchedStepIndex: Int = -1
 )
