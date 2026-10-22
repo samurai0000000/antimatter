@@ -1,3 +1,9 @@
+/*
+ * ConnectScreen.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.connect
 
 import androidx.compose.foundation.background
@@ -11,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,6 +37,35 @@ import dev.saifmukhtar.antimatter.core.data.GatewayProfile
 import dev.saifmukhtar.antimatter.core.network.BridgeWebSocket
 import dev.saifmukhtar.antimatter.core.ui.PulseAnimation
 
+@Composable
+fun ConnectRoute(
+    connectionState: BridgeWebSocket.ConnectionState,
+    savedUrl: String? = null,
+    savedClientId: String? = null,
+    savedClientSecret: String? = null,
+    profiles: List<GatewayProfile> = emptyList(),
+    onConnectClick: (url: String, clientId: String?, clientSecret: String?, token: String?) -> Unit,
+    onScanQRClick: () -> Unit,
+    onProfileSelected: (String) -> Unit,
+    onProfileDeleted: (String) -> Unit,
+    onCheckForUpdates: (() -> Unit)? = null,
+    updateStatusText: String? = null
+) {
+    ConnectScreen(
+        connectionState = connectionState,
+        savedUrl = savedUrl,
+        savedClientId = savedClientId,
+        savedClientSecret = savedClientSecret,
+        profiles = profiles,
+        onConnectClick = onConnectClick,
+        onScanQRClick = onScanQRClick,
+        onProfileSelected = onProfileSelected,
+        onProfileDeleted = onProfileDeleted,
+        onCheckForUpdates = onCheckForUpdates,
+        updateStatusText = updateStatusText
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectScreen(
@@ -41,7 +77,9 @@ fun ConnectScreen(
     onConnectClick: (url: String, clientId: String?, clientSecret: String?, token: String?) -> Unit,
     onScanQRClick: () -> Unit,
     onProfileSelected: (String) -> Unit,
-    onProfileDeleted: (String) -> Unit
+    onProfileDeleted: (String) -> Unit,
+    onCheckForUpdates: (() -> Unit)? = null,
+    updateStatusText: String? = null
 ) {
     var ipAddress by remember { mutableStateOf(savedUrl?.ifBlank { "http://127.0.0.1:3883" } ?: "http://127.0.0.1:3883") }
     var pairingToken by remember { mutableStateOf("") }
@@ -338,6 +376,45 @@ fun ConnectScreen(
                             }
                         }
                     }
+                }
+            }
+
+            if (onCheckForUpdates != null) {
+                Spacer(modifier = Modifier.height(24.dp))
+                if (!updateStatusText.isNullOrBlank()) {
+                    Text(
+                        text = updateStatusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = tealAccent,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+                OutlinedButton(
+                    onClick = onCheckForUpdates,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = cardBg,
+                        contentColor = Color(0xFFE2E8F0)
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdateAlt,
+                        contentDescription = "Check for App Updates",
+                        modifier = Modifier.size(18.dp),
+                        tint = tealAccent
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = updateStatusText?.takeIf { it.isNotBlank() } ?: "Check for App Updates",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 

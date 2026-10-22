@@ -15,9 +15,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,9 +31,54 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.selfso.selfupdate.SelfUpdateController
+import com.selfso.selfupdate.UpdateState
+import com.selfso.selfupdate.ui.SelfUpdateBanner
+import dev.saifmukhtar.antimatter.BuildConfig
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.text.NumberFormat
+import java.util.Collections
 import java.util.Locale
+import java.util.WeakHashMap
 import kotlin.math.roundToInt
+
+private val dialogVisibilityRegistry = Collections.synchronizedMap(
+    WeakHashMap<SelfUpdateController, MutableStateFlow<Boolean>>()
+)
+
+fun SelfUpdateController.dialogVisibleFlow(): StateFlow<Boolean> {
+    synchronized(dialogVisibilityRegistry) {
+        return dialogVisibilityRegistry.getOrPut(this) { MutableStateFlow(false) }.asStateFlow()
+    }
+}
+
+fun SelfUpdateController.showDialog() {
+    synchronized(dialogVisibilityRegistry) {
+        dialogVisibilityRegistry.getOrPut(this) { MutableStateFlow(false) }.value = true
+    }
+}
+
+fun SelfUpdateController.hideDialog() {
+    synchronized(dialogVisibilityRegistry) {
+        dialogVisibilityRegistry.getOrPut(this) { MutableStateFlow(false) }.value = false
+    }
+}
+
+fun formatSelfUpdateStatusText(state: UpdateState): String = when (state) {
+    is UpdateState.Idle -> "Automatic update checks active (every 6h)"
+    is UpdateState.Checking -> "Checking selfso.com for updates..."
+    is UpdateState.UpToDate -> "App is up to date"
+    is UpdateState.Available -> "Update v${state.manifest.versionName} is available"
+    is UpdateState.Downloading -> {
+        val progressPercent = ((state.progressFraction ?: 0f) * 100f).roundToInt()
+        "Downloading update ($progressPercent%)..."
+    }
+    is UpdateState.PermissionRequired -> "Permission required to install APK"
+    is UpdateState.ReadyToInstall, is UpdateState.Installing -> "Ready to install update"
+    is UpdateState.Error -> "Update check failed: ${state.message}"
+}
 
 fun computeAntigravitySweepAngle(ag: AntigravityQuota?): Float {
     if (ag == null || !ag.isRunning) return 0f
@@ -45,14 +93,26 @@ fun computeAntigravitySweepAngle(ag: AntigravityQuota?): Float {
 @Composable
 fun QuotasScreen(
     quotaStatus: QuotaStatus?,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    updateController: SelfUpdateController? = null
 ) {
+    val updateState = updateController?.state?.collectAsState()?.value ?: UpdateState.Idle
+
     if (quotaStatus == null) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (updateController != null) {
+                    SelfUpdateBanner(controller = updateController)
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
@@ -79,7 +139,7 @@ fun QuotasScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Unified AI Quota Balances",
                         style = MaterialTheme.typography.titleLarge,
@@ -92,19 +152,57 @@ fun QuotasScreen(
                         color = Color(0xFF9CA3AF)
                     )
                 }
-                IconButton(
-                    onClick = onRefresh,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(Color(0xFF0E7490), shape = RoundedCornerShape(12.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Refresh",
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    if (updateController != null) {
+                        val isUpdateActionable = updateState is UpdateState.Available ||
+                            updateState is UpdateState.PermissionRequired ||
+                            updateState is UpdateState.ReadyToInstall
+                        IconButton(
+                            onClick = {
+                                if (isUpdateActionable) {
+                                    updateController.showDialog()
+                                } else {
+                                    updateController.checkForUpdates()
+                                }
+                            },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(
+                                    if (isUpdateActionable) Color(0xFF10B981) else Color(0xFF1E293B),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SystemUpdateAlt,
+                                contentDescription = if (isUpdateActionable) "Install Update" else "Check for Updates",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = onRefresh,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(Color(0xFF0E7490), shape = RoundedCornerShape(12.dp))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
+            }
+        }
+
+        if (updateController != null) {
+            item {
+                SelfUpdateBanner(controller = updateController)
             }
         }
 
@@ -708,6 +806,111 @@ fun QuotasScreen(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color(0xFFD1D5DB)
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. App Version & OTA Update Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(listOf(Color(0xFF00CEC9), Color(0xFF3B82F6)))
+                ),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(Color(0xFF0E7490), shape = CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SystemUpdateAlt,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "App Version & OTA Update",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF9CA3AF)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val statusText = formatSelfUpdateStatusText(updateState)
+                    val statusColor = when (updateState) {
+                        is UpdateState.Available,
+                        is UpdateState.ReadyToInstall -> Color(0xFF10B981)
+                        is UpdateState.Error,
+                        is UpdateState.PermissionRequired -> Color(0xFFF59E0B)
+                        else -> Color(0xFFD1D5DB)
+                    }
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = statusColor
+                    )
+
+                    if (updateController != null) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val isBusy = updateState is UpdateState.Checking ||
+                                updateState is UpdateState.Downloading
+                            OutlinedButton(
+                                onClick = { updateController.checkForUpdates() },
+                                enabled = !isBusy,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color(0xFF38BDF8)
+                                )
+                            ) {
+                                Text("Check for Updates")
+                            }
+
+                            val isInstallActionable = updateState is UpdateState.Available ||
+                                updateState is UpdateState.PermissionRequired ||
+                                updateState is UpdateState.ReadyToInstall
+                            if (isInstallActionable) {
+                                Button(
+                                    onClick = { updateController.showDialog() },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF10B981),
+                                        contentColor = Color.White
+                                    )
+                                ) {
+                                    Text("Install Update")
                                 }
                             }
                         }

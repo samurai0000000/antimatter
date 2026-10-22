@@ -1,5 +1,16 @@
+/*
+ * build.gradle.kts
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 import java.util.Properties
 import java.io.FileInputStream
+import java.net.URI
+import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.util.jar.JarEntry
+import java.util.jar.JarOutputStream
 
 plugins {
     alias(libs.plugins.android.application)
@@ -7,6 +18,33 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
+}
+
+val generateJdkHttpServerJar by tasks.registering {
+    val outputFile = layout.buildDirectory.file("intermediates/jdk-httpserver.jar")
+    outputs.file(outputFile)
+    doLast {
+        val targetJar = outputFile.get().asFile
+        targetJar.parentFile.mkdirs()
+        try {
+            val fs = FileSystems.getFileSystem(URI.create("jrt:/"))
+            val modPath = fs.getPath("/modules/jdk.httpserver")
+            JarOutputStream(targetJar.outputStream()).use { jarOut ->
+                Files.walk(modPath).use { stream ->
+                    stream.forEach { path ->
+                        if (Files.isRegularFile(path)) {
+                            val rel = modPath.relativize(path).toString()
+                            jarOut.putNextEntry(JarEntry(rel))
+                            Files.copy(path, jarOut)
+                            jarOut.closeEntry()
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Ignored if jrt:/ is unavailable
+        }
+    }
 }
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
@@ -20,11 +58,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.saifmukhtar.antimatter"
+        applicationId = "com.selfso.aimon"
         minSdk = 33           // Android 13 required for native Ed25519 Support
         targetSdk = 35
-        versionCode = 7
-        versionName = "2.0.5"
+        versionCode = 8
+        versionName = "2.0.6"
     }
 
     signingConfigs {
@@ -68,6 +106,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -143,8 +182,11 @@ dependencies {
     testImplementation(libs.mockito.core)
     testImplementation(libs.mockito.kotlin)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation("org.json:json:20240303")
+    testImplementation(files(generateJdkHttpServerJar))
 
     // Modules
+    implementation(project(":selfupdate"))
     implementation(project(":core:data"))
     implementation(project(":core:network"))
     implementation(project(":core:ui"))

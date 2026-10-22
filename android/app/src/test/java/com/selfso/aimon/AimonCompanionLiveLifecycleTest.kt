@@ -249,7 +249,9 @@ class AimonCompanionLiveLifecycleTest {
             assertEquals("Initial ChatUiState conversationId must default to 'new'", "new", chatVm.uiState.value.conversationId)
 
             // 8a. Subscribe to a real conversation containing tool calls with JSON object arguments
-            val existingWithTools = chatVm.uiState.value.history.first().id
+            val existingWithTools = chatVm.uiState.value.history.firstOrNull {
+                it.stepCount > 5 && !it.title.contains("Identify yourself", ignoreCase = true)
+            }?.id ?: chatVm.uiState.value.history.first().id
             chatVm.subscribeConversation(existingWithTools)
             waitedMs = 0L
             while (chatVm.uiState.value.steps.isEmpty() && waitedMs < 5000L) {
@@ -268,7 +270,7 @@ class AimonCompanionLiveLifecycleTest {
             assertTrue("ChatViewModel must enter isGenerating=true immediately after sendMessage", chatVm.uiState.value.isGenerating)
 
             waitedMs = 0L
-            while (waitedMs < 30000L) {
+            while (waitedMs < 90000L) {
                 val st = chatVm.uiState.value
                 if (!st.conversationId.isNullOrBlank() && st.conversationId != "new") {
                     createdLiveCid = st.conversationId

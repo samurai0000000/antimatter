@@ -13,7 +13,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import dev.saifmukhtar.antimatter.MainActivity
 
 class AimonNotificationManager(private val context: Context) {
 

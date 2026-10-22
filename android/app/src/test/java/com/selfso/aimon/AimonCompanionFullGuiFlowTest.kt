@@ -9,7 +9,17 @@ package com.selfso.aimon
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import com.google.gson.JsonParser
+import com.selfso.selfupdate.ApkDownloader
+import com.selfso.selfupdate.SelfUpdateChecker
+import com.selfso.selfupdate.SelfUpdateController
+import com.selfso.selfupdate.UpdateManifest
+import com.selfso.selfupdate.UpdateState
+import com.sun.net.httpserver.HttpExchange
+import com.sun.net.httpserver.HttpHandler
+import com.sun.net.httpserver.HttpServer
 import dev.saifmukhtar.antimatter.core.data.AppDao
 import dev.saifmukhtar.antimatter.core.data.UserPreferencesRepository
 import dev.saifmukhtar.antimatter.core.network.BridgeWebSocket
@@ -32,10 +42,14 @@ import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.io.BufferedInputStream
+import java.io.File
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
+import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -751,6 +765,191 @@ class AimonCompanionFullGuiFlowTest {
         val postReq = recordedRequests.first { it.path == "/api/workspace/file" && it.method == "POST" }
         assertEquals("tok-live-verified-001", postReq.mobileToken)
         assertTrue(postReq.body.contains("make test"))
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        return digest.digest(bytes).joinToString("") { "%02x".format(it) }
+    }
+
+    private fun createMockPackageContext(
+        pkgName: String,
+        installedVersionCode: Int,
+        installedVersionName: String
+    ): Context {
+        val ctx = mock(Context::class.java)
+        val pm = mock(PackageManager::class.java)
+        val pkgInfo = PackageInfo().apply {
+            packageName = pkgName
+            @Suppress("DEPRECATION")
+            versionCode = installedVersionCode
+            versionName = installedVersionName
+        }
+        `when`(ctx.packageName).thenReturn(pkgName)
+        `when`(ctx.packageManager).thenReturn(pm)
+        @Suppress("DEPRECATION")
+        `when`(pm.getPackageInfo(pkgName, 0)).thenReturn(pkgInfo)
+        return ctx
+    }
+
+    @Test
+    fun testSelfUpdateManifestAndCheckerLoopbackUpToDateAndAvailable() = runBlocking {
+        val httpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val port = httpServer.address.port
+        var servedVersionCode = 7L
+        var servedVersionName = "2.0.5"
+        val dummySha = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+
+        httpServer.createContext("/software/android/manifest.json", HttpHandler { exchange: HttpExchange ->
+            val body = """
+                {
+                  "schemaVersion": 1,
+                  "baseUrl": "http://127.0.0.1:$port/software/android/",
+                  "updatedAt": "2026-10-22T12:00:00Z",
+                  "apps": {
+                    "com.selfso.aimon": {
+                      "slug": "aimon",
+                      "title": "AIMon Companion",
+                      "applicationId": "com.selfso.aimon",
+                      "apkFilename": "aimon-companion.apk",
+                      "versionCode": $servedVersionCode,
+                      "versionName": "$servedVersionName",
+                      "minSdk": 33,
+                      "targetSdk": 35,
+                      "apkUrl": "aimon/aimon-companion.apk",
+                      "pageUrl": "http://127.0.0.1:$port/software/android/aimon/",
+                      "sha256": "$dummySha",
+                      "sizeBytes": 16384,
+                      "publishedAt": "2026-10-22T12:00:00Z",
+                      "releaseNotes": "OTA self-update verification build."
+                    }
+                  }
+                }
+            """.trimIndent().toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.set("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        })
+        httpServer.start()
+
+        try {
+            val manifestEndpoint = "http://127.0.0.1:$port/software/android/manifest.json"
+
+            // 1. Verify both release and .debug package IDs resolve the aimon catalog entry and see UpToDate when versionCode <= 7
+            for (pkgId in listOf("com.selfso.aimon", "com.selfso.aimon.debug")) {
+                val ctx = createMockPackageContext(pkgId, installedVersionCode = 7, installedVersionName = "2.0.5")
+                val checker = SelfUpdateChecker(ctx, manifestUrl = manifestEndpoint)
+                val parsedManifest = checker.fetchManifest(pkgId)
+                assertEquals("com.selfso.aimon", parsedManifest.applicationId)
+                assertEquals("aimon", parsedManifest.slug)
+                assertEquals(7L, parsedManifest.versionCode)
+                assertEquals("2.0.5", parsedManifest.versionName)
+                assertEquals("http://127.0.0.1:$port/software/android/aimon/aimon-companion.apk", parsedManifest.apkUrl)
+
+                val stateEqual = checker.checkForUpdate()
+                assertTrue("Expected UpToDate when versionCode == 7 for $pkgId", stateEqual is UpdateState.UpToDate)
+                assertEquals("App is up to date", formatSelfUpdateStatusText(stateEqual))
+            }
+
+            // Also verify versionCode < 7 (e.g. remote = 6) reports UpToDate
+            servedVersionCode = 6L
+            servedVersionName = "2.0.4"
+            val ctxOlder = createMockPackageContext("com.selfso.aimon.debug", installedVersionCode = 7, installedVersionName = "2.0.5")
+            val stateOlder = SelfUpdateChecker(ctxOlder, manifestUrl = manifestEndpoint).checkForUpdate()
+            assertTrue("Expected UpToDate when remote versionCode < 7", stateOlder is UpdateState.UpToDate)
+
+            // 2. Verify Available when remote versionCode > 7 (versionCode = 8, versionName = "2.0.6")
+            servedVersionCode = 8L
+            servedVersionName = "2.0.6"
+            for (pkgId in listOf("com.selfso.aimon", "com.selfso.aimon.debug")) {
+                val ctx = createMockPackageContext(pkgId, installedVersionCode = 7, installedVersionName = "2.0.5")
+                val checker = SelfUpdateChecker(ctx, manifestUrl = manifestEndpoint)
+                val stateAvail = checker.checkForUpdate()
+                assertTrue("Expected Available when remote versionCode == 8 for $pkgId", stateAvail is UpdateState.Available)
+                val avail = stateAvail as UpdateState.Available
+                assertEquals(8L, avail.manifest.versionCode)
+                assertEquals("2.0.6", avail.manifest.versionName)
+                assertEquals(7L, avail.installedVersionCode)
+                assertEquals("2.0.5", avail.installedVersionName)
+                assertEquals("Update v2.0.6 is available", formatSelfUpdateStatusText(avail))
+            }
+        } finally {
+            httpServer.stop(0)
+        }
+    }
+
+    @Test
+    fun testSelfUpdateApkDownloaderStreamingSha256AndMismatchRejection() = runBlocking {
+        val tempCacheDir = Files.createTempDirectory("aimon_selfupdate_apk_test").toFile()
+        val httpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val port = httpServer.address.port
+        val apkPayload = ByteArray(48 * 1024) { ((it * 31 + 7) and 0xFF).toByte() }
+        val validSha256 = sha256Hex(apkPayload)
+
+        httpServer.createContext("/software/android/aimon/aimon-companion.apk", HttpHandler { exchange: HttpExchange ->
+            exchange.responseHeaders.set("Content-Type", "application/vnd.android.package-archive")
+            exchange.sendResponseHeaders(200, apkPayload.size.toLong())
+            exchange.responseBody.use { it.write(apkPayload) }
+        })
+        httpServer.start()
+
+        try {
+            val apkUrl = "http://127.0.0.1:$port/software/android/aimon/aimon-companion.apk"
+            val downloader = ApkDownloader(cacheRootDir = tempCacheDir)
+
+            // 1. Valid streaming download and SHA-256 verification
+            val validManifest = UpdateManifest(
+                applicationId = "com.selfso.aimon",
+                versionCode = 8L,
+                versionName = "2.0.6",
+                apkUrl = apkUrl,
+                sha256 = validSha256,
+                sizeBytes = apkPayload.size.toLong(),
+                slug = "aimon",
+                title = "AIMon Companion"
+            )
+            val progressSteps = mutableListOf<Pair<Long, Long>>()
+            val stagedApk = downloader.downloadAndVerify(validManifest) { bytesRead, totalBytes ->
+                progressSteps.add(bytesRead to totalBytes)
+            }
+            assertTrue("Staged APK must exist", stagedApk.exists())
+            assertEquals("com.selfso.aimon-8.apk", stagedApk.name)
+            assertEquals(apkPayload.size.toLong(), stagedApk.length())
+            assertEquals(validSha256, sha256Hex(stagedApk.readBytes()))
+            assertTrue("Progress callbacks must be emitted", progressSteps.isNotEmpty())
+            assertEquals(apkPayload.size.toLong(), progressSteps.last().first)
+
+            // Verify status formatting for Downloading, PermissionRequired, ReadyToInstall, and Error
+            val downloadingHalf = UpdateState.Downloading(validManifest, apkPayload.size.toLong() / 2L, apkPayload.size.toLong())
+            assertEquals("Downloading update (50%)...", formatSelfUpdateStatusText(downloadingHalf))
+            assertEquals("Permission required to install APK", formatSelfUpdateStatusText(UpdateState.PermissionRequired(validManifest, stagedApk)))
+            assertEquals("Ready to install update", formatSelfUpdateStatusText(UpdateState.ReadyToInstall(validManifest, stagedApk)))
+            assertEquals("Update check failed: timeout", formatSelfUpdateStatusText(UpdateState.Error("timeout")))
+
+            // 2. SHA-256 mismatch rejection and cleanup
+            val tamperedManifest = validManifest.copy(
+                versionCode = 9L,
+                versionName = "2.0.7",
+                sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+            )
+            try {
+                downloader.downloadAndVerify(tamperedManifest)
+                fail("Expected SecurityException on SHA-256 mismatch")
+            } catch (e: SecurityException) {
+                assertTrue(e.message?.contains("SHA-256 mismatch") == true)
+            }
+            assertFalse(
+                "Corrupted target APK must not exist",
+                File(tempCacheDir, "com.selfso.aimon-9.apk").exists()
+            )
+            assertFalse(
+                "Temporary .part file must be deleted on SHA-256 mismatch",
+                File(tempCacheDir, "com.selfso.aimon-9.apk.part").exists()
+            )
+        } finally {
+            httpServer.stop(0)
+            tempCacheDir.deleteRecursively()
+        }
     }
 }
 

@@ -1,10 +1,10 @@
 /*
- * AntimatterNavigation.kt
+ * AimonNavigation.kt
  *
  * Copyright (C) 2026, Charles Chiou
  */
 
-package dev.saifmukhtar.antimatter.navigation
+package com.selfso.aimon
 
 import android.content.Intent
 import androidx.activity.compose.BackHandler
@@ -12,16 +12,26 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import dev.saifmukhtar.antimatter.core.network.BridgeWebSocket
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.selfso.selfupdate.SelfUpdateController
+import com.selfso.selfupdate.UpdateState
+import com.selfso.selfupdate.ui.SelfUpdateDialog
+import com.selfso.selfupdate.ui.rememberSelfUpdateController
+import dev.saifmukhtar.antimatter.core.ui.utils.LocalCrashHandler
 import dev.saifmukhtar.antimatter.feature.chat.ChatScreen
 import dev.saifmukhtar.antimatter.feature.chat.ChatViewModel
 import dev.saifmukhtar.antimatter.feature.connect.ConnectScreen
@@ -30,21 +40,44 @@ import dev.saifmukhtar.antimatter.feature.connect.QRScannerScreen
 import dev.saifmukhtar.antimatter.feature.files.FileViewScreen
 import dev.saifmukhtar.antimatter.feature.files.FilesScreen
 import dev.saifmukhtar.antimatter.feature.files.FilesViewModel
-import dev.saifmukhtar.antimatter.core.ui.utils.LocalCrashHandler
-import dev.saifmukhtar.antimatter.MainActivity
-
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.Sensors
-import com.selfso.aimon.AimonViewModel
-import com.selfso.aimon.ApprovalsScreen
-import com.selfso.aimon.QuotasScreen
-import com.selfso.aimon.TelemetryScreen
+import kotlinx.coroutines.delay
 
 @Composable
-fun AntimatterNavigation(
+fun AimonNavigation(
     intent: Intent?
 ) {
+    val updateController: SelfUpdateController = rememberSelfUpdateController(checkOnLaunch = true)
+    val updateState by updateController.state.collectAsState()
+    val dialogRequested by updateController.dialogVisibleFlow().collectAsState()
+
+    LaunchedEffect(updateController) {
+        while (true) {
+            delay(6L * 60L * 60L * 1000L) // 6 hours
+            val current = updateController.state.value
+            if (current is UpdateState.Idle ||
+                current is UpdateState.UpToDate ||
+                current is UpdateState.Error
+            ) {
+                updateController.checkForUpdates()
+            }
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, updateController) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (updateController.state.value is UpdateState.PermissionRequired) {
+                    updateController.proceedWithInstallAfterPermission()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     val chatViewModel: ChatViewModel = hiltViewModel()
     val filesViewModel: FilesViewModel = hiltViewModel()
     val connectionViewModel: ConnectionViewModel = hiltViewModel()
@@ -60,7 +93,7 @@ fun AntimatterNavigation(
     val pendingApprovals by aimonViewModel.pendingApprovals.collectAsState()
     val satelliteStatus by aimonViewModel.satelliteStatus.collectAsState()
     val mobileToken by aimonViewModel.mobileToken.collectAsState()
-    
+
     var currentTab by remember { mutableStateOf(2) }
     var isScanningQR by remember { mutableStateOf(false) }
     var pendingDeepLinkUrl by remember { mutableStateOf<String?>(null) }
@@ -68,8 +101,29 @@ fun AntimatterNavigation(
     var pendingDeepLinkPubKey by remember { mutableStateOf<String?>(null) }
     var pendingDeepLinkScheme by remember { mutableStateOf<String?>(null) }
     var showCrashDialog by remember { mutableStateOf(false) }
-    
+
     val context = LocalContext.current
+
+    val isQuotasTabVisible = !isScanningQR &&
+        !savedUrl.isNullOrEmpty() &&
+        filesUiState.viewedFilePath == null &&
+        currentTab == 2
+
+    LaunchedEffect(updateState) {
+        if (updateState is UpdateState.Downloading) {
+            updateController.hideDialog()
+        }
+    }
+
+    if (dialogRequested || !isQuotasTabVisible) {
+        SelfUpdateDialog(
+            controller = updateController,
+            onDismiss = {
+                updateController.hideDialog()
+                updateController.dismiss()
+            }
+        )
+    }
 
     LaunchedEffect(Unit) {
         aimonViewModel.initPreferences(context)
@@ -84,7 +138,7 @@ fun AntimatterNavigation(
                               (uri.scheme == "aimon" && uri.path == "/pair")
             val isLegacy = uri.scheme == "antimatter" && uri.host == "connect"
             val isSecure = uri.scheme == "https" && uri.host == "antimatter.saifmukhtar.dev" && uri.path?.startsWith("/connect") == true
-            
+
             if (isAimonPair) {
                 val host = uri.getQueryParameter("host") ?: "127.0.0.1"
                 val port = uri.getQueryParameter("port")?.toIntOrNull() ?: 3883
@@ -117,7 +171,7 @@ fun AntimatterNavigation(
             }
         }
     }
-    
+
     if (showCrashDialog) {
         val crashSummary = remember { LocalCrashHandler.getLatestCrashSummary(context) }
         AlertDialog(
@@ -155,9 +209,9 @@ fun AntimatterNavigation(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { 
+                TextButton(onClick = {
                     LocalCrashHandler.clearCrashLogs(context)
-                    showCrashDialog = false 
+                    showCrashDialog = false
                 }) {
                     Text("Dismiss")
                 }
@@ -169,7 +223,7 @@ fun AntimatterNavigation(
         AlertDialog(
             onDismissRequest = { pendingDeepLinkUrl = null },
             title = { Text("Incoming Connection") },
-            text = { 
+            text = {
                 Column {
                     Text("Connect to workspace at $pendingDeepLinkUrl?")
                     if (pendingDeepLinkScheme == "antimatter") {
@@ -209,13 +263,13 @@ fun AntimatterNavigation(
     }
 
     var scannedProfileData by remember { mutableStateOf<Map<String, String?>?>(null) }
-    
+
     if (scannedProfileData != null) {
         var profileName by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { scannedProfileData = null },
             title = { Text("Name this Connection") },
-            text = { 
+            text = {
                 OutlinedTextField(
                     value = profileName,
                     onValueChange = { profileName = it },
@@ -445,7 +499,8 @@ fun AntimatterNavigation(
                         2 -> {
                             QuotasScreen(
                                 quotaStatus = quotaStatus,
-                                onRefresh = { aimonViewModel.fetchQuotas() }
+                                onRefresh = { aimonViewModel.fetchQuotas() },
+                                updateController = updateController
                             )
                         }
                         3 -> {
@@ -509,8 +564,19 @@ fun AntimatterNavigation(
             },
             onScanQRClick = { isScanningQR = true },
             onProfileSelected = { id -> connectionViewModel.switchProfile(id) },
-            onProfileDeleted = { id -> connectionViewModel.deleteProfile(id) }
+            onProfileDeleted = { id -> connectionViewModel.deleteProfile(id) },
+            onCheckForUpdates = {
+                if (updateState is UpdateState.Available ||
+                    updateState is UpdateState.Downloading ||
+                    updateState is UpdateState.PermissionRequired ||
+                    updateState is UpdateState.ReadyToInstall
+                ) {
+                    updateController.showDialog()
+                } else {
+                    updateController.checkForUpdates()
+                }
+            },
+            updateStatusText = if (updateState is UpdateState.Idle) null else formatSelfUpdateStatusText(updateState)
         )
     }
 }
-
