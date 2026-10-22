@@ -7,6 +7,11 @@
 package com.selfso.aimon
 
 import com.google.gson.annotations.SerializedName
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.util.Locale
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 fun formatDurationSeconds(seconds: Long, fallback: String = ""): String {
@@ -18,6 +23,39 @@ fun formatDurationSeconds(seconds: Long, fallback: String = ""): String {
         hours > 0L -> "${hours}h ${minutes}m"
         minutes > 0L -> "${minutes}m"
         else -> "${seconds}s"
+    }
+}
+
+fun formatClaudeTokens(tokens: Long): String {
+    val v = maxOf(0L, tokens)
+    return when {
+        v < 1_000L -> v.toString()
+        v < 1_000_000L -> String.format(Locale.US, "%.1fK", v / 1e3)
+        v < 1_000_000_000L -> String.format(Locale.US, "%.2fM", v / 1e6)
+        else -> String.format(Locale.US, "%.2fB", v / 1e9)
+    }
+}
+
+fun formatIsoDateShort(iso: String): String {
+    val trimmed = iso.trim()
+    if (trimmed.isEmpty()) return "--"
+    val tIdx = trimmed.indexOf('T')
+    return if (tIdx > 0) trimmed.substring(0, tIdx) else trimmed
+}
+
+fun computeDaysRemaining(iso: String, nowEpochMs: Long = System.currentTimeMillis()): String {
+    val trimmed = iso.trim()
+    if (trimmed.isEmpty()) return "--"
+    return try {
+        val targetMs = if (trimmed.contains('T')) {
+            Instant.parse(trimmed).toEpochMilli()
+        } else {
+            LocalDate.parse(trimmed).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+        }
+        val diffDays = ceil((targetMs - nowEpochMs).toDouble() / (1000.0 * 60.0 * 60.0 * 24.0)).toInt()
+        if (diffDays > 0) "$diffDays days left" else "Reset pending"
+    } catch (_: Exception) {
+        "--"
     }
 }
 
@@ -278,17 +316,92 @@ data class ClaudeWindowTotals(
     val messages: Long = 0L,
     @SerializedName(value = "total_tokens", alternate = ["totalTokens"])
     val totalTokens: Long = 0L,
+    @SerializedName(value = "est_cost_nano", alternate = ["estCostNano"])
+    val estCostNano: Long = 0L,
     @SerializedName(value = "est_cost_usd", alternate = ["estCostUsd", "costUsd"])
-    val estCostUsd: Double = 0.0
+    val rawEstCostUsd: Double? = null
+) {
+    val estCostUsd: Double
+        get() = rawEstCostUsd ?: (estCostNano / 1e9)
+}
+
+data class ClaudeModelUsage(
+    @SerializedName("model")
+    val model: String = "",
+    @SerializedName("messages")
+    val messages: Long = 0L,
+    @SerializedName(value = "input_tokens", alternate = ["inputTokens"])
+    val inputTokens: Long = 0L,
+    @SerializedName(value = "output_tokens", alternate = ["outputTokens"])
+    val outputTokens: Long = 0L,
+    @SerializedName(value = "cache_read_tokens", alternate = ["cacheReadTokens"])
+    val cacheReadTokens: Long = 0L,
+    @SerializedName(value = "cache_write_5m_tokens", alternate = ["cacheWrite5mTokens"])
+    val cacheWrite5mTokens: Long = 0L,
+    @SerializedName(value = "cache_write_1h_tokens", alternate = ["cacheWrite1hTokens"])
+    val cacheWrite1hTokens: Long = 0L,
+    @SerializedName(value = "est_cost_nano", alternate = ["estCostNano"])
+    val estCostNano: Long = 0L,
+    @SerializedName(value = "est_cost_usd", alternate = ["estCostUsd"])
+    val rawEstCostUsd: Double? = null
+) {
+    val estCostUsd: Double
+        get() = rawEstCostUsd ?: (estCostNano / 1e9)
+
+    val totalTokens: Long
+        get() = inputTokens + outputTokens + cacheReadTokens + cacheWrite5mTokens + cacheWrite1hTokens
+}
+
+data class ClaudeDailyPoint(
+    @SerializedName(value = "day_str", alternate = ["dayStr"])
+    val dayStr: String = "",
+    @SerializedName(value = "day_ms", alternate = ["dayMs"])
+    val dayMs: Long = 0L,
+    @SerializedName("messages")
+    val messages: Long = 0L,
+    @SerializedName("tokens")
+    val tokens: Long = 0L,
+    @SerializedName(value = "est_cost_nano", alternate = ["estCostNano"])
+    val estCostNano: Long = 0L,
+    @SerializedName(value = "est_cost_usd", alternate = ["estCostUsd"])
+    val rawEstCostUsd: Double? = null
+) {
+    val estCostUsd: Double
+        get() = rawEstCostUsd ?: (estCostNano / 1e9)
+}
+
+data class ClaudePricingStatus(
+    @SerializedName(value = "source_url", alternate = ["sourceUrl"])
+    val sourceUrl: String = "",
+    @SerializedName(value = "fetched_at_epoch", alternate = ["fetchedAtEpoch"])
+    val fetchedAtEpoch: Long = 0L,
+    @SerializedName("stale")
+    val stale: Boolean = false,
+    @SerializedName(value = "models_loaded", alternate = ["modelsLoaded"])
+    val modelsLoaded: Int = 0,
+    @SerializedName(value = "quarantined_count", alternate = ["quarantinedCount"])
+    val quarantinedCount: Int = 0,
+    @SerializedName("error")
+    val error: String = ""
 )
 
 data class ClaudeAccount(
     @SerializedName(value = "name", alternate = ["email"])
     val name: String = "",
-    @SerializedName(value = "tier", alternate = ["planTier", "plan_tier", "raw_subscription_type"])
+    @SerializedName(value = "tier", alternate = ["planTier", "plan_tier"])
     val planTier: String = "",
+    @SerializedName(value = "raw_subscription_type", alternate = ["rawSubscriptionType"])
+    val rawSubscriptionType: String = "",
+    @SerializedName(value = "raw_rate_limit_tier", alternate = ["rawRateLimitTier"])
+    val rawRateLimitTier: String = "",
     @SerializedName(value = "has_data", alternate = ["hasData"])
     val hasData: Boolean = true,
+    @SerializedName(value = "error_message", alternate = ["errorMessage"])
+    val errorMessage: String = "",
+    @SerializedName("warning")
+    val warning: String = "",
+    @SerializedName(value = "window_days", alternate = ["windowDays"])
+    val windowDays: Int = 30,
     @SerializedName(value = "fiveHourUtilization", alternate = ["five_hour_utilization"])
     val rawFiveHourUtilization: Double? = null,
     @SerializedName(value = "sevenDayUtilization", alternate = ["seven_day_utilization"])
@@ -303,6 +416,10 @@ data class ClaudeAccount(
     val last7d: ClaudeWindowTotals? = null,
     @SerializedName("window")
     val window: ClaudeWindowTotals? = null,
+    @SerializedName("today")
+    val today: ClaudeWindowTotals? = null,
+    @SerializedName(value = "cycle_configured", alternate = ["cycleConfigured"])
+    val cycleConfigured: Boolean = false,
     @SerializedName("cycle")
     val cycle: ClaudeWindowTotals? = null,
     @SerializedName(value = "spend_limit_usd", alternate = ["spendLimitUsd"])
@@ -310,10 +427,31 @@ data class ClaudeAccount(
     @SerializedName(value = "est_pct_of_limit", alternate = ["estPctOfLimit"])
     val estPctOfLimit: Double = 0.0,
     @SerializedName(value = "cycle_reset_iso", alternate = ["cycleResetIso"])
-    val cycleResetIso: String = ""
+    val cycleResetIso: String = "",
+    @SerializedName("models")
+    val models: List<ClaudeModelUsage> = emptyList(),
+    @SerializedName("daily")
+    val daily: List<ClaudeDailyPoint> = emptyList(),
+    @SerializedName(value = "unpriced_models", alternate = ["unpricedModels"])
+    val unpricedModels: List<String> = emptyList()
 ) {
     val email: String
         get() = name
+
+    val displayTierName: String
+        get() = when (planTier.lowercase()) {
+            "enterprise" -> "Enterprise"
+            "personal" -> "Personal"
+            "", "unknown" -> if (rawSubscriptionType.isNotBlank()) rawSubscriptionType else "Unknown tier"
+            else -> planTier
+        }
+
+    val valueLabel: String
+        get() = when (planTier.lowercase()) {
+            "enterprise" -> "Est. cost"
+            "personal" -> "Est. API-equivalent value"
+            else -> "Est. value"
+        }
 
     val cost5h: Double
         get() = rawCost5h ?: last5h?.estCostUsd ?: 0.0
@@ -321,8 +459,14 @@ data class ClaudeAccount(
     val cost7d: Double
         get() = rawCost7d ?: last7d?.estCostUsd ?: 0.0
 
+    val cycleCostUsd: Double
+        get() = cycle?.estCostUsd ?: 0.0
+
     val windowCostUsd: Double
         get() = window?.estCostUsd ?: cycle?.estCostUsd ?: cost7d
+
+    val todayCostUsd: Double
+        get() = today?.estCostUsd ?: 0.0
 
     val totalTokens: Long
         get() = window?.totalTokens ?: last7d?.totalTokens ?: last5h?.totalTokens ?: 0L
@@ -346,6 +490,8 @@ data class ClaudeAccount(
 data class ClaudeUsage(
     @SerializedName("enabled")
     val enabled: Boolean = true,
+    @SerializedName("pricing")
+    val pricing: ClaudePricingStatus? = null,
     @SerializedName(value = "fiveHourUtilization", alternate = ["five_hour_utilization"])
     val rawFiveHourUtilization: Double? = null,
     @SerializedName(value = "sevenDayUtilization", alternate = ["seven_day_utilization"])

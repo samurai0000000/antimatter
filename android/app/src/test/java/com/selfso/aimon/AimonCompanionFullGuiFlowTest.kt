@@ -643,6 +643,40 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals("Max", acct.planTier)
         assertEquals(41.2, acct.fiveHourUtilization, 0.01)
         assertEquals(68.9, acct.sevenDayUtilization, 0.01)
+
+        // Verify Web UI-aligned ClaudeAccount cycle, window tiles, and model breakdown helpers
+        val enterpriseAcct = ClaudeAccount(
+            name = "default",
+            planTier = "enterprise",
+            hasData = true,
+            windowDays = 30,
+            last5h = ClaudeWindowTotals(label = "5h", totalTokens = 0L, rawEstCostUsd = 0.0),
+            last7d = ClaudeWindowTotals(label = "7d", totalTokens = 1_110_000_000L, rawEstCostUsd = 335.81),
+            window = ClaudeWindowTotals(label = "30d", messages = 12293L, totalTokens = 4_320_000_000L, rawEstCostUsd = 901.55),
+            today = ClaudeWindowTotals(label = "today", totalTokens = 45_000_000L, rawEstCostUsd = 14.20),
+            cycleConfigured = true,
+            cycle = ClaudeWindowTotals(label = "cycle", totalTokens = 3_950_000_000L, rawEstCostUsd = 827.33),
+            spendLimitUsd = 1000.0,
+            estPctOfLimit = 82.7,
+            cycleResetIso = "2026-11-01T00:00:00Z",
+            models = listOf(
+                ClaudeModelUsage(
+                    model = "claude-sonnet-5-5",
+                    messages = 7603L,
+                    inputTokens = 900_000_000L,
+                    outputTokens = 2_000_000_000L,
+                    rawEstCostUsd = 483.11
+                )
+            )
+        )
+        assertEquals("Enterprise", enterpriseAcct.displayTierName)
+        assertEquals("Est. cost", enterpriseAcct.valueLabel)
+        assertEquals(827.33, enterpriseAcct.cycleCostUsd, 0.01)
+        assertEquals(14.20, enterpriseAcct.todayCostUsd, 0.01)
+        assertEquals("2026-11-01", formatIsoDateShort(enterpriseAcct.cycleResetIso))
+        assertEquals("1.11B", formatClaudeTokens(enterpriseAcct.last7d!!.totalTokens))
+        assertEquals("4.32B", formatClaudeTokens(enterpriseAcct.window!!.totalTokens))
+        assertEquals(2_900_000_000L, enterpriseAcct.models[0].totalTokens)
     }
 
     @Test
