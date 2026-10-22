@@ -57,12 +57,24 @@ android {
     namespace = "dev.saifmukhtar.antimatter"
     compileSdk = 35
 
+    val rootCmakeFile = rootProject.projectDir.resolve("../../../CMakeLists.txt")
+    val versionRegex = Regex("""project\(aimon\s+VERSION\s+([0-9]+)\.([0-9]+)\.([0-9]+)""")
+    val versionMatch = versionRegex.find(if (rootCmakeFile.exists()) rootCmakeFile.readText() else "")
+        ?: error("Could not extract project(aimon VERSION x.y.z) from ${rootCmakeFile.absolutePath}")
+    val (projMajor, projMinor, projPatch) = Triple(
+        versionMatch.groupValues[1],
+        versionMatch.groupValues[2],
+        versionMatch.groupValues[3]
+    )
+    val projVersionName = "$projMajor.$projMinor.$projPatch"
+    val projVersionCode = projMajor.toInt() * 10000 + projMinor.toInt() * 100 + projPatch.toInt()
+
     defaultConfig {
         applicationId = "com.selfso.aimon"
         minSdk = 33           // Android 13 required for native Ed25519 Support
         targetSdk = 35
-        versionCode = 8
-        versionName = "2.0.6"
+        versionCode = projVersionCode
+        versionName = projVersionName
     }
 
     signingConfigs {
