@@ -520,42 +520,6 @@ data class ClaudeUsage(
         get() = rawTotalTokens ?: accounts.sumOf { it.totalTokens }
 }
 
-data class PendingApproval(
-    @SerializedName(value = "approval_id", alternate = ["id", "request_id", "approvalId"])
-    val approvalId: String = "",
-    @SerializedName(value = "agent_type", alternate = ["agent", "agentType"])
-    val agentType: String = "antigravity",
-    @SerializedName(value = "tool_name", alternate = ["action_type", "toolName"])
-    val toolName: String = "",
-    @SerializedName("workspace")
-    val workspace: String = "",
-    @SerializedName(value = "tool_args", alternate = ["details", "toolArgs"])
-    val toolArgs: Map<String, Any> = emptyMap(),
-    @SerializedName("command")
-    val command: String? = null,
-    @SerializedName("reason")
-    val reason: String = "",
-    @SerializedName(value = "timeout_seconds", alternate = ["timeoutSeconds"])
-    val timeoutSeconds: Int = 120,
-    @SerializedName(value = "remaining_seconds", alternate = ["remainingSeconds"])
-    val remainingSeconds: Int = -1,
-    @SerializedName(value = "requested_at", alternate = ["requestedAt"])
-    val requestedAt: Long = System.currentTimeMillis() / 1000L
-) {
-    fun computeSecondsLeft(nowEpochSeconds: Long = System.currentTimeMillis() / 1000L): Long {
-        if (remainingSeconds >= 0) {
-            return remainingSeconds.toLong()
-        }
-        val reqEpochSec = if (requestedAt > 100_000_000_000L) {
-            requestedAt / 1000L
-        } else {
-            requestedAt
-        }
-        val elapsed = maxOf(0L, nowEpochSeconds - reqEpochSec)
-        return maxOf(0L, timeoutSeconds.toLong() - elapsed)
-    }
-}
-
 data class DiscoveredMonitorItem(
     @SerializedName("id")
     val id: String = "",

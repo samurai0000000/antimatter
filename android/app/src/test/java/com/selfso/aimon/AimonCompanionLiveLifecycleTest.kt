@@ -123,69 +123,16 @@ class AimonCompanionLiveLifecycleTest {
             assertTrue("Total spend must be >= 0", (cur?.totalSpendUsd ?: -1.0) >= 0.0)
             println("Antigravity Credits: ${ag?.totalCreditsRemaining}, Cursor Fast Requests: ${cur?.fastRequestsUsed}/${cur?.fastRequestsLimit}, Spend: $${cur?.totalSpendUsd}")
 
-            println("=== Stage 4: Live Action Approval Pipeline ===")
-            val approvalPayload = """
-                {
-                    "agent_type": "antigravity",
-                    "tool_name": "run_command",
-                    "workspace": "~/work/aimon",
-                    "tool_args": { "CommandLine": "make test" },
-                    "reason": "Automated Lifecycle Test",
-                    "timeout_seconds": 15
-                }
-            """.trimIndent()
-
-            // 1. Launch blocking approval request in background coroutine
-            val approvalJob = async(Dispatchers.IO) {
-                val reqApproval = Request.Builder()
-                    .url("$baseUrl/api/approvals/request")
-                    .header("User-Agent", "aimon-mobile/1.0")
-                    .post(approvalPayload.toRequestBody("application/json".toMediaType()))
-                    .build()
-                val resp = httpClient.newCall(reqApproval).execute()
-                resp.body?.string() ?: ""
-            }
-
-            // Wait 300ms for request to register
-            delay(300)
-
-            // 2. Fetch pending approvals from companion
-            val pendingReq = Request.Builder()
+            println("=== Stage 4: Verify Removed Action Approvals Endpoints Return 404 ===")
+            val removedApprovalsReq = Request.Builder()
                 .url("$baseUrl/api/approvals/pending")
                 .header("User-Agent", "aimon-mobile/1.0")
                 .header("X-Mobile-Token", sessionToken ?: "")
                 .get()
                 .build()
-            val pendingResp = httpClient.newCall(pendingReq).execute()
-            assertTrue("GET /api/approvals/pending must succeed", pendingResp.isSuccessful)
-            val pendingBody = pendingResp.body?.string() ?: ""
-            val listType = object : com.google.gson.reflect.TypeToken<List<PendingApproval>>() {}.type
-            val pendingList: List<PendingApproval> = gson.fromJson(pendingBody, listType) ?: emptyList()
-            assertTrue("Pending list should have at least 1 item", pendingList.isNotEmpty())
-            val testApproval = pendingList.last()
-            println("Pending Approval ID: ${testApproval.approvalId}, Tool: ${testApproval.toolName}")
-
-            // 3. Submit decision from companion
-            val decisionPayload = """
-                {
-                    "approval_id": "${testApproval.approvalId}",
-                    "decision": "ALLOW"
-                }
-            """.trimIndent()
-            val decisionReq = Request.Builder()
-                .url("$baseUrl/api/approvals/decision")
-                .header("User-Agent", "aimon-mobile/1.0")
-                .header("X-Mobile-Token", sessionToken ?: "")
-                .post(decisionPayload.toRequestBody("application/json".toMediaType()))
-                .build()
-            val decisionResp = httpClient.newCall(decisionReq).execute()
-            assertTrue("POST /api/approvals/decision must succeed", decisionResp.isSuccessful)
-            println("Approval decision ALLOW submitted successfully.")
-
-            // 4. Verify request completes with APPROVED
-            val approvalResult = approvalJob.await()
-            println("Approval Result: $approvalResult")
-            assertTrue("Approval verdict must be APPROVED", approvalResult.contains("APPROVED"))
+            val removedApprovalsResp = httpClient.newCall(removedApprovalsReq).execute()
+            assertEquals("GET /api/approvals/pending must return 404 Not Found", 404, removedApprovalsResp.code)
+            removedApprovalsResp.close()
 
             println("=== Stage 5: Telemetry Overview & Timeseries ===")
             val telemetryReq = Request.Builder()

@@ -47,9 +47,6 @@ class AimonViewModel @Inject constructor() : ViewModel() {
     private val _quotaStatus = MutableStateFlow<QuotaStatus?>(null)
     val quotaStatus: StateFlow<QuotaStatus?> = _quotaStatus.asStateFlow()
 
-    private val _pendingApprovals = MutableStateFlow<List<PendingApproval>>(emptyList())
-    val pendingApprovals: StateFlow<List<PendingApproval>> = _pendingApprovals.asStateFlow()
-
     private val _satelliteStatus = MutableStateFlow<SatelliteStatus?>(SatelliteStatus())
     val satelliteStatus: StateFlow<SatelliteStatus?> = _satelliteStatus.asStateFlow()
 
@@ -76,17 +73,6 @@ class AimonViewModel @Inject constructor() : ViewModel() {
     private var pollingJob: Job? = null
 
     private val sseListener = object : SseEventListener {
-        override fun onIncomingApproval(approval: PendingApproval) {
-            val current = _pendingApprovals.value.toMutableList()
-            current.removeAll { it.approvalId == approval.approvalId }
-            current.add(0, approval)
-            _pendingApprovals.value = current
-        }
-
-        override fun onApprovalResolved(approvalId: String) {
-            _pendingApprovals.value = _pendingApprovals.value.filterNot { it.approvalId == approvalId }
-        }
-
         override fun onRefreshRequested() {
             refreshAll()
         }
@@ -314,7 +300,6 @@ class AimonViewModel @Inject constructor() : ViewModel() {
 
     internal suspend fun refreshAllInternal() {
         fetchQuotasInternal()
-        fetchApprovalsInternal()
         fetchSatelliteTelemetryInternal()
     }
 
@@ -339,28 +324,6 @@ class AimonViewModel @Inject constructor() : ViewModel() {
                 }
             } catch (e: Exception) {
                 Log.w("AimonViewModel", "Failed to fetch quotas from $baseUrl: ${e.message}")
-            }
-        }
-    }
-
-    fun fetchApprovals() {
-        viewModelScope.launch {
-            fetchApprovalsInternal()
-        }
-    }
-
-    internal suspend fun fetchApprovalsInternal() {
-        withContext(Dispatchers.IO) {
-            try {
-                val req = buildAuthenticatedRequest("$baseUrl/api/approvals/pending").get().build()
-                okHttpClient.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) {
-                        val body = res.body?.string() ?: ""
-                        _pendingApprovals.value = parsePendingApprovals(body)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("AimonViewModel", "Failed to fetch approvals from $baseUrl: ${e.message}")
             }
         }
     }
@@ -465,34 +428,6 @@ class AimonViewModel @Inject constructor() : ViewModel() {
         }
     }
 
-    fun parsePendingApprovals(body: String): List<PendingApproval> {
-        if (body.isBlank()) return emptyList()
-        return try {
-            val elem = JsonParser.parseString(body)
-            val listType = object : com.google.gson.reflect.TypeToken<List<PendingApproval>>() {}.type
-            when {
-                elem.isJsonArray -> gson.fromJson<List<PendingApproval>>(elem, listType) ?: emptyList()
-                elem.isJsonObject -> {
-                    val obj = elem.asJsonObject
-                    val arr = when {
-                        obj.has("pending") && obj.get("pending").isJsonArray -> obj.getAsJsonArray("pending")
-                        obj.has("approvals") && obj.get("approvals").isJsonArray -> obj.getAsJsonArray("approvals")
-                        else -> null
-                    }
-                    if (arr != null) {
-                        gson.fromJson<List<PendingApproval>>(arr, listType) ?: emptyList()
-                    } else {
-                        emptyList()
-                    }
-                }
-                else -> emptyList()
-            }
-        } catch (e: Exception) {
-            Log.w("AimonViewModel", "Error parsing PendingApprovals: ${e.message}")
-            emptyList()
-        }
-    }
-
     fun parseSatelliteTelemetry(monitorsBody: String?, overviewBody: String?): SatelliteStatus {
         val discoveredMonitors = mutableListOf<DiscoveredMonitorItem>()
         var meshmon = MeshmonStatus()
@@ -586,42 +521,7 @@ class AimonViewModel @Inject constructor() : ViewModel() {
         )
     }
 
-    fun submitDecision(approvalId: String, verdict: String) {
-        viewModelScope.launch {
-            submitDecisionSuspend(approvalId, verdict)
-        }
-    }
-
-    suspend fun submitDecisionSuspend(approvalId: String, verdict: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val lower = verdict.lowercase()
-            val approved = lower == "allow" || lower == "approve" || lower == "approved"
-            val payload = mapOf(
-                "approval_id" to approvalId,
-                "request_id" to approvalId,
-                "approved" to approved,
-                "decision" to verdict
-            )
-            val jsonBody = gson.toJson(payload)
-            val req = buildAuthenticatedRequest("$baseUrl/api/approvals/decision")
-                .post(jsonBody.toRequestBody("application/json".toMediaType()))
-                .build()
-            okHttpClient.newCall(req).execute().use { res ->
-                if (res.isSuccessful) {
-                    _pendingApprovals.value = _pendingApprovals.value.filterNot { it.approvalId == approvalId }
-                    appContext?.let { AimonNotificationManager(it).dismissApprovalNotification(approvalId) }
-                    return@withContext true
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("AimonViewModel", "Failed to submit decision: ${e.message}")
-        }
-        return@withContext false
-    }
-
     interface SseEventListener {
-        fun onIncomingApproval(approval: PendingApproval)
-        fun onApprovalResolved(approvalId: String)
         fun onRefreshRequested()
     }
 
@@ -647,18 +547,6 @@ class AimonViewModel @Inject constructor() : ViewModel() {
 
         fun unregisterSseListener(listener: SseEventListener) {
             listeners.remove(listener)
-        }
-
-        fun notifyIncomingApproval(approval: PendingApproval) {
-            for (l in listeners) {
-                l.onIncomingApproval(approval)
-            }
-        }
-
-        fun notifyApprovalResolved(approvalId: String) {
-            for (l in listeners) {
-                l.onApprovalResolved(approvalId)
-            }
         }
 
         fun notifyRefreshRequested() {

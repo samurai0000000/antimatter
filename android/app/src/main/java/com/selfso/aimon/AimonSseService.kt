@@ -130,7 +130,7 @@ class AimonSseService : Service() {
         }
 
         if (baseUrl == currentBaseUrl && token == currentToken && streamJob?.isActive == true) {
-            promoteToForeground("Listening for real-time approval and quota events")
+            promoteToForeground("Listening for real-time quota and telemetry events")
             return START_STICKY
         }
 
@@ -138,7 +138,7 @@ class AimonSseService : Service() {
         currentToken = token
         isRunning = true
         startSseLoop()
-        promoteToForeground("Listening for real-time approval and quota events")
+        promoteToForeground("Listening for real-time quota and telemetry events")
 
         return START_STICKY
     }
@@ -250,92 +250,16 @@ class AimonSseService : Service() {
             }
         }
 
-        fun parseSseApprovalEvent(eventType: String, rawData: String): PendingApproval? {
-            if (!rawData.startsWith("{")) return null
-            return try {
-                val root = JsonParser.parseString(rawData).asJsonObject
-                val type = root.get("type")?.takeIf { !it.isJsonNull }?.asString ?: eventType
-                if (type != "approval_request") return null
-
-                val payloadObj: JsonObject = if (root.has("payload") && root.get("payload").isJsonObject) {
-                    root.getAsJsonObject("payload")
-                } else {
-                    root
-                }
-
-                val approvalId = payloadObj.get("approval_id")?.takeIf { !it.isJsonNull }?.asString
-                    ?: payloadObj.get("request_id")?.takeIf { !it.isJsonNull }?.asString
-                    ?: payloadObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                    ?: return null
-
-                val agentType = payloadObj.get("agent_type")?.takeIf { !it.isJsonNull }?.asString
-                    ?: payloadObj.get("agent")?.takeIf { !it.isJsonNull }?.asString
-                    ?: "antigravity"
-                val toolName = payloadObj.get("tool_name")?.takeIf { !it.isJsonNull }?.asString
-                    ?: payloadObj.get("action_type")?.takeIf { !it.isJsonNull }?.asString
-                    ?: "run_command"
-                val workspace = payloadObj.get("workspace")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                val reason = payloadObj.get("reason")?.takeIf { !it.isJsonNull }?.asString
-                    ?: payloadObj.get("details")?.takeIf { !it.isJsonNull }?.asString
-                    ?: ""
-                val command = payloadObj.get("command")?.takeIf { !it.isJsonNull }?.asString
-                val timeoutSec = payloadObj.get("timeout_seconds")?.takeIf { !it.isJsonNull }?.asInt ?: 120
-                val requestedAt = payloadObj.get("requested_at")?.takeIf { !it.isJsonNull }?.asLong
-                    ?: (System.currentTimeMillis() / 1000)
-
-                val argsMap = mutableMapOf<String, Any>()
-                if (payloadObj.has("tool_args") && payloadObj.get("tool_args").isJsonObject) {
-                    val toolArgsObj = payloadObj.getAsJsonObject("tool_args")
-                    for ((k, v) in toolArgsObj.entrySet()) {
-                        if (v != null && !v.isJsonNull) {
-                            argsMap[k] = if (v.isJsonPrimitive) v.asString else v.toString()
-                        }
-                    }
-                }
-
-                PendingApproval(
-                    approvalId = approvalId,
-                    agentType = agentType,
-                    toolName = toolName,
-                    workspace = workspace,
-                    toolArgs = argsMap,
-                    command = command ?: argsMap["CommandLine"]?.toString() ?: argsMap["command"]?.toString(),
-                    reason = reason,
-                    timeoutSeconds = timeoutSec,
-                    requestedAt = requestedAt
-                )
-            } catch (_: Exception) {
-                null
-            }
-        }
-
         fun handleSseEvent(
             eventType: String,
             rawData: String,
-            notificationManager: AimonNotificationManager? = null
+            @Suppress("UNUSED_PARAMETER") notificationManager: AimonNotificationManager? = null
         ) {
             if (!rawData.startsWith("{")) return
             try {
                 val root = JsonParser.parseString(rawData).asJsonObject
                 val type = root.get("type")?.takeIf { !it.isJsonNull }?.asString ?: eventType
                 when (type) {
-                    "approval_request" -> {
-                        val approval = parseSseApprovalEvent(eventType, rawData) ?: return
-                        AimonViewModel.notifyIncomingApproval(approval)
-                        notificationManager?.showApprovalNotification(approval)
-                    }
-                    "approval_resolved" -> {
-                        val payloadObj = if (root.has("payload") && root.get("payload").isJsonObject) {
-                            root.getAsJsonObject("payload")
-                        } else {
-                            root
-                        }
-                        val approvalId = payloadObj.get("approval_id")?.takeIf { !it.isJsonNull }?.asString
-                            ?: payloadObj.get("request_id")?.takeIf { !it.isJsonNull }?.asString
-                            ?: return
-                        AimonViewModel.notifyApprovalResolved(approvalId)
-                        notificationManager?.dismissApprovalNotification(approvalId)
-                    }
                     "quota_update", "telemetry_sample" -> {
                         AimonViewModel.notifyRefreshRequested()
                     }

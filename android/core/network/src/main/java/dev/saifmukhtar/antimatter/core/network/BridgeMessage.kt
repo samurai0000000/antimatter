@@ -25,7 +25,6 @@ enum class StepCase(val raw: String) {
     TASK_BOUNDARY("taskBoundary"),
     INVOKE_SUBAGENT("invokeSubagent"),
     SEND_MESSAGE("sendMessage"),
-    APPROVAL_INTERACTION("approvalInteraction"),
     ELICITATION("elicitation"),
     ASK_QUESTION("askQuestion"),
     UNKNOWN("unknown");
@@ -61,7 +60,6 @@ data class TrajectoryStep(
             StepCase.TOOL_CALL -> "Using tool: ${tool ?: "unknown"}"
             StepCase.ERROR_MESSAGE -> "⚠️ ${value ?: "Error"}"
             StepCase.EPHEMERAL_MESSAGE -> value ?: ""
-            StepCase.APPROVAL_INTERACTION -> "⏸ Waiting for approval"
             StepCase.ELICITATION, StepCase.ASK_QUESTION -> "❓ ${value ?: "Question"}"
             else -> value ?: ""
         }

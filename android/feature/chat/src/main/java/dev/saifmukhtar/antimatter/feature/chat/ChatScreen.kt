@@ -63,8 +63,14 @@ import kotlinx.coroutines.launch
 
 sealed class ChatItem {
     data class SingleStep(val step: TrajectoryStep, val originalIndex: Int) : ChatItem()
-    data class ThoughtGroup(val steps: List<TrajectoryStep>, val originalIndex: Int) : ChatItem() {
+    data class ThoughtGroup(
+        val steps: List<TrajectoryStep>,
+        val originalIndex: Int,
+        val isCompleted: Boolean = false
+    ) : ChatItem() {
         val firstOriginalIndex: Int get() = originalIndex
+        val toolCallCount: Int get() = steps.count { it.stepCase == StepCase.TOOL_CALL }
+        val thoughtCount: Int get() = steps.count { it.stepCase == StepCase.PLANNER_RESPONSE }
     }
 }
 
@@ -125,23 +131,30 @@ fun groupSteps(steps: List<TrajectoryStep>): List<ChatItem> {
     var groupStartIndex = 0
 
     for ((origIdx, step) in visibleEntries) {
-        if (step.stepCase == StepCase.PLANNER_RESPONSE) {
-            if (currentGroup.isEmpty()) groupStartIndex = origIdx
-            val rawThought = step.thinking ?: step.value
-            val cleanedText = cleanThoughtText(rawThought)
-            if (!cleanedText.isNullOrBlank()) {
-                currentGroup.add(step.copy(value = cleanedText))
+        when (step.stepCase) {
+            StepCase.PLANNER_RESPONSE -> {
+                val rawThought = step.thinking ?: step.value
+                val cleanedText = cleanThoughtText(rawThought)
+                if (!cleanedText.isNullOrBlank()) {
+                    if (currentGroup.isEmpty()) groupStartIndex = origIdx
+                    currentGroup.add(step.copy(value = cleanedText))
+                }
             }
-        } else {
-            if (currentGroup.isNotEmpty()) {
-                result.add(ChatItem.ThoughtGroup(currentGroup, groupStartIndex))
-                currentGroup = mutableListOf()
+            StepCase.TOOL_CALL -> {
+                if (currentGroup.isEmpty()) groupStartIndex = origIdx
+                currentGroup.add(step)
             }
-            result.add(ChatItem.SingleStep(step, origIdx))
+            else -> {
+                if (currentGroup.isNotEmpty()) {
+                    result.add(ChatItem.ThoughtGroup(currentGroup, groupStartIndex, isCompleted = true))
+                    currentGroup = mutableListOf()
+                }
+                result.add(ChatItem.SingleStep(step, origIdx))
+            }
         }
     }
     if (currentGroup.isNotEmpty()) {
-        result.add(ChatItem.ThoughtGroup(currentGroup, groupStartIndex))
+        result.add(ChatItem.ThoughtGroup(currentGroup, groupStartIndex, isCompleted = false))
     }
     return result
 }
@@ -405,32 +418,50 @@ fun ChatScreen(
                 )
             ),
             topBar = {
-                TopAppBar(
-                    title = {
-                        val isNewChat = uiState.conversationId.isNullOrBlank() || uiState.conversationId == "new"
+                val isNewChat = uiState.conversationId.isNullOrBlank() || uiState.conversationId == "new"
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        IconButton(
+                            onClick = { scope.launch { drawerState.open() } },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Menu,
+                                contentDescription = "Menu",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
                         Surface(
                             onClick = { viewModel.setShowConversationPickerSheet(true) },
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(8.dp),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp, horizontal = 2.dp)
+                            modifier = Modifier.weight(1f)
                         ) {
                             if (isNewChat) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    horizontalAlignment = Alignment.Start
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Text(
-                                        text = "ANTIGRAVITY CHAT",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFF38BDF8),
-                                        fontWeight = FontWeight.Bold
+                                    MiniTagBadge(
+                                        text = "AGY",
+                                        bgColor = Color(0xFF083344),
+                                        textColor = Color(0xFF38BDF8)
                                     )
                                     Text(
-                                        text = "Select or Start Antigravity Chat ▾",
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        text = "Select or Start Chat ▾",
+                                        style = MaterialTheme.typography.bodySmall,
                                         fontWeight = FontWeight.SemiBold,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
@@ -451,12 +482,12 @@ fun ChatScreen(
                                     ?: "Conversation ${uiState.conversationId.take(8)}"
 
                                 Column(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                     horizontalAlignment = Alignment.Start
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                                     ) {
                                         MiniTagBadge(
                                             text = srcBadge,
@@ -472,7 +503,7 @@ fun ChatScreen(
                                         }
                                         if (openInAgy) {
                                             MiniTagBadge(
-                                                text = "OPEN IN AGY",
+                                                text = "AGY",
                                                 bgColor = Color(0xFF083344),
                                                 textColor = Color(0xFF22D3EE)
                                             )
@@ -483,75 +514,83 @@ fun ChatScreen(
                                             textColor = Color(0xFFD1D5DB)
                                         )
                                     }
-                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Spacer(modifier = Modifier.height(1.dp))
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(
                                             text = convTitle,
-                                            style = MaterialTheme.typography.bodyMedium,
+                                            style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f, fill = false)
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
                                         Text(
                                             text = "▾",
-                                            style = MaterialTheme.typography.bodyMedium,
+                                            style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                 }
                             }
                         }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.Menu, contentDescription = "Menu")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { viewModel.toggleInChatSearch(!uiState.isInChatSearchActive) }) {
-                            Icon(
-                                Icons.Default.Search,
-                                contentDescription = "Find in conversation",
-                                tint = if (uiState.isInChatSearchActive) Color(0xFF38BDF8) else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+
                         if (uiState.steps.isNotEmpty()) {
                             Surface(
                                 onClick = { viewModel.setShowPromptsSheet(true) },
-                                shape = RoundedCornerShape(14.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 color = Color(0xFF0C4A6E),
-                                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
-                                modifier = Modifier.padding(horizontal = 2.dp)
+                                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f))
                             ) {
                                 Text(
-                                    text = "Prompts (${userPromptSteps.size})",
+                                    text = "P(${userPromptSteps.size})",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color(0xFFE0F2FE),
                                     fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                                 )
                             }
                         }
-                        IconButton(onClick = { viewModel.setShowConversationPickerSheet(true) }) {
-                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Switch Conversation")
+
+                        IconButton(
+                            onClick = { viewModel.toggleInChatSearch(!uiState.isInChatSearchActive) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Search,
+                                contentDescription = "Find in conversation",
+                                tint = if (uiState.isInChatSearchActive) Color(0xFF38BDF8) else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
-                        IconButton(onClick = {
-                            onRequestArtifacts()
-                            showArtifactsSheet = true
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.Article, contentDescription = "Artifacts")
+
+                        IconButton(
+                            onClick = {
+                                onRequestArtifacts()
+                                showArtifactsSheet = true
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Article,
+                                contentDescription = "Artifacts",
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
-                        IconButton(onClick = onNewConversation) {
-                            Icon(Icons.Default.Add, contentDescription = "New Chat")
+
+                        IconButton(
+                            onClick = onNewConversation,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "New Chat",
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
-                    )
-                )
+                    }
+                }
             },
             bottomBar = {
                 MessageInput(
@@ -785,7 +824,13 @@ fun ChatScreen(
                                     }
                                     is ChatItem.ThoughtGroup -> {
                                         val isLatest = uiState.isGenerating && item === reversedItems.first()
-                                        ThoughtGroupBubble(steps = item.steps, isLatest = isLatest)
+                                        ThoughtGroupBubble(
+                                            steps = item.steps,
+                                            isLatest = isLatest,
+                                            isCompleted = item.isCompleted,
+                                            onAcceptEdits = onAcceptEdits,
+                                            onRejectEdits = onRejectEdits
+                                        )
                                     }
                                 }
                             }

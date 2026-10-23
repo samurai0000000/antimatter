@@ -43,15 +43,6 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
-        <receiver
-            android:name="com.selfso.aimon.ApprovalReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.selfso.aimon.ACTION_APPROVE" />
-                <action android:name="com.selfso.aimon.ACTION_DENY" />
-            </intent-filter>
-        </receiver>
-
         <!-- Main Activity -->
         <activity
             android:name="com.selfso.aimon.MainActivity"

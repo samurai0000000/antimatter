@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.*
@@ -90,11 +89,10 @@ fun AimonNavigation(
     val savedUrl = savedCredentials.url
 
     val quotaStatus by aimonViewModel.quotaStatus.collectAsState()
-    val pendingApprovals by aimonViewModel.pendingApprovals.collectAsState()
     val satelliteStatus by aimonViewModel.satelliteStatus.collectAsState()
     val mobileToken by aimonViewModel.mobileToken.collectAsState()
 
-    var currentTab by remember { mutableStateOf(2) }
+    var currentTab by remember { mutableStateOf(1) }
     var isScanningQR by remember { mutableStateOf(false) }
     var pendingDeepLinkUrl by remember { mutableStateOf<String?>(null) }
     var pendingDeepLinkToken by remember { mutableStateOf<String?>(null) }
@@ -107,7 +105,7 @@ fun AimonNavigation(
     val isQuotasTabVisible = !isScanningQR &&
         !savedUrl.isNullOrEmpty() &&
         filesUiState.viewedFilePath == null &&
-        currentTab == 2
+        currentTab == 1
 
     LaunchedEffect(updateState) {
         if (updateState is UpdateState.Downloading) {
@@ -316,7 +314,7 @@ fun AimonNavigation(
         QRScannerScreen(
             onQRScanned = { url, token, cfId, cfSecret, pubKey ->
                 isScanningQR = false
-                currentTab = 2
+                currentTab = 1
                 aimonViewModel.configureEndpoint(url, token)
                 chatViewModel.configureEndpoint(url, token)
                 filesViewModel.configureEndpoint(url, token)
@@ -353,8 +351,8 @@ fun AimonNavigation(
                     filesViewModel.configureEndpoint(savedUrl, effectiveToken)
                 }
             }
-            BackHandler(enabled = currentTab != 2) {
-                currentTab = 2
+            BackHandler(enabled = currentTab != 1) {
+                currentTab = 1
             }
             Scaffold(
                 containerColor = Color(0xFF0D0D12),
@@ -387,41 +385,10 @@ fun AimonNavigation(
                             )
                         )
                         NavigationBarItem(
-                            icon = {
-                                if (pendingApprovals.isNotEmpty()) {
-                                    BadgedBox(
-                                        badge = {
-                                            Badge(
-                                                containerColor = Color(0xFFEF4444),
-                                                contentColor = Color.White
-                                            ) {
-                                                Text("${pendingApprovals.size}")
-                                            }
-                                        }
-                                    ) {
-                                        Icon(Icons.Default.CheckCircle, contentDescription = "Approvals")
-                                    }
-                                } else {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = "Approvals")
-                                }
-                            },
-                            label = { Text("Approvals") },
-                            selected = currentTab == 1,
-                            onClick = { currentTab = 1 },
-                            alwaysShowLabel = false,
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = Color(0xFFF59E0B),
-                                selectedTextColor = Color(0xFFF59E0B),
-                                unselectedIconColor = unselectedColor,
-                                unselectedTextColor = unselectedColor,
-                                indicatorColor = indicatorColor
-                            )
-                        )
-                        NavigationBarItem(
                             icon = { Icon(Icons.Default.Analytics, contentDescription = "Quotas") },
                             label = { Text("Quotas") },
-                            selected = currentTab == 2,
-                            onClick = { currentTab = 2 },
+                            selected = currentTab == 1,
+                            onClick = { currentTab = 1 },
                             alwaysShowLabel = false,
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Color(0xFF2DD4BF),
@@ -434,8 +401,8 @@ fun AimonNavigation(
                         NavigationBarItem(
                             icon = { Icon(Icons.Default.Sensors, contentDescription = "Telemetry") },
                             label = { Text("Telemetry") },
-                            selected = currentTab == 3,
-                            onClick = { currentTab = 3 },
+                            selected = currentTab == 2,
+                            onClick = { currentTab = 2 },
                             alwaysShowLabel = false,
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Color(0xFF38BDF8),
@@ -448,8 +415,8 @@ fun AimonNavigation(
                         NavigationBarItem(
                             icon = { Icon(Icons.Default.Folder, contentDescription = "Workspace") },
                             label = { Text("Files") },
-                            selected = currentTab == 4,
-                            onClick = { currentTab = 4 },
+                            selected = currentTab == 3,
+                            onClick = { currentTab = 3 },
                             alwaysShowLabel = false,
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Color(0xFF06B6D4),
@@ -463,8 +430,8 @@ fun AimonNavigation(
                 }
             ) { paddingValues ->
                 Box(modifier = Modifier
-                    .padding(bottom = paddingValues.calculateBottomPadding())
-                    .consumeWindowInsets(PaddingValues(bottom = paddingValues.calculateBottomPadding()))
+                    .padding(paddingValues)
+                    .consumeWindowInsets(paddingValues)
                 ) {
                     when (currentTab) {
                         0 -> {
@@ -490,26 +457,19 @@ fun AimonNavigation(
                             )
                         }
                         1 -> {
-                            ApprovalsScreen(
-                                pendingApprovals = pendingApprovals,
-                                onDecision = { id, verdict -> aimonViewModel.submitDecision(id, verdict) },
-                                onRefresh = { aimonViewModel.fetchApprovals() }
-                            )
-                        }
-                        2 -> {
                             QuotasScreen(
                                 quotaStatus = quotaStatus,
                                 onRefresh = { aimonViewModel.fetchQuotas() },
                                 updateController = updateController
                             )
                         }
-                        3 -> {
+                        2 -> {
                             TelemetryScreen(
                                 satelliteStatus = satelliteStatus,
                                 onRefresh = { aimonViewModel.fetchSatelliteTelemetry() }
                             )
                         }
-                        4 -> {
+                        3 -> {
                             FilesScreen(
                                 uiState = filesUiState,
                                 onRefresh = { filesViewModel.loadFileTree() },

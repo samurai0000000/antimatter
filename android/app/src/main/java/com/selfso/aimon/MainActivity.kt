@@ -49,7 +49,12 @@ class MainActivity : FragmentActivity() {
                     if (isAuthenticated) {
                         AimonNavigation(intent = intent)
                     } else {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .systemBarsPadding(),
+                            contentAlignment = Alignment.Center
+                        ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(
                                     imageVector = Icons.Default.Lock,

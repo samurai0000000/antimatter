@@ -97,6 +97,7 @@ fun ConnectScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(darkBg)
+            .systemBarsPadding()
     ) {
         Column(
             modifier = Modifier

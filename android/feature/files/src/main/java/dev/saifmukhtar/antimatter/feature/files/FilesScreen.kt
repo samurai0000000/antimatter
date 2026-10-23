@@ -1,3 +1,9 @@
+/*
+ * FilesScreen.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.files
 
 import androidx.compose.foundation.background
@@ -133,7 +139,8 @@ fun FilesScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent
-                )
+                ),
+                windowInsets = WindowInsets(0, 0, 0, 0)
             )
         },
         floatingActionButton = {

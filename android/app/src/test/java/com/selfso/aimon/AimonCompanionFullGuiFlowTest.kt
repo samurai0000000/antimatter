@@ -23,7 +23,11 @@ import com.sun.net.httpserver.HttpServer
 import dev.saifmukhtar.antimatter.core.data.AppDao
 import dev.saifmukhtar.antimatter.core.data.UserPreferencesRepository
 import dev.saifmukhtar.antimatter.core.network.BridgeWebSocket
+import dev.saifmukhtar.antimatter.core.network.StepCase
+import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
+import dev.saifmukhtar.antimatter.feature.chat.ChatItem
 import dev.saifmukhtar.antimatter.feature.chat.ChatViewModel
+import dev.saifmukhtar.antimatter.feature.chat.groupSteps
 import dev.saifmukhtar.antimatter.feature.files.FilesViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -370,30 +374,6 @@ class AimonCompanionFullGuiFlowTest {
             """.trimIndent()
         }
 
-        registerRoute("/api/approvals/pending", requireToken = expectedToken) {
-            val reqAt = nowEpochSeconds - 12L
-            """
-            [
-              {
-                "id": "req-epoch-test-01",
-                "agent": "antigravity",
-                "action_type": "run_command",
-                "workspace": "~/work/aimon",
-                "command": "make test",
-                "details": {},
-                "reason": "Run unit test suite",
-                "requested_at": $reqAt,
-                "timeout_seconds": 60,
-                "remaining_seconds": 48
-              }
-            ]
-            """.trimIndent()
-        }
-
-        registerRoute("/api/approvals/decision", requireToken = expectedToken) {
-            """{"status":"resolved"}"""
-        }
-
         registerRoute("/api/agent/available", requireToken = expectedToken) {
             """
             {
@@ -564,7 +544,6 @@ class AimonCompanionFullGuiFlowTest {
         // Wait for initial fetches triggered by pairWithServer to complete with X-Mobile-Token
         waitUntil {
             recordedRequests.any { it.path == "/api/status" && it.mobileToken == "tok-live-verified-001" } &&
-                recordedRequests.any { it.path == "/api/approvals/pending" && it.mobileToken == "tok-live-verified-001" } &&
                 recordedRequests.any { it.path == "/api/monitors" && it.mobileToken == "tok-live-verified-001" }
         }
 
@@ -714,34 +693,59 @@ class AimonCompanionFullGuiFlowTest {
     }
 
     @Test
-    fun testApprovalsEpochSecondsCountdownAndDecisionResolution() = runBlocking {
-        val vm = AimonViewModel()
-        vm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
-        vm.fetchApprovals()
+    fun testGroupStepsStreamingVsCompletedToolAndThoughtGrouping() {
+        val promptStep = TrajectoryStep(case = "userInput", value = "Build and test the project", stepIndex = 0)
+        val thought1 = TrajectoryStep(case = "plannerResponse", thinking = "Inspecting build configuration", stepIndex = 1)
+        val tool1 = TrajectoryStep(
+            case = "toolCall",
+            tool = "run_command",
+            toolSummary = "Compile binary",
+            command = "make -j8",
+            stepIndex = 2
+        )
+        val thought2 = TrajectoryStep(case = "plannerResponse", thinking = "Running test suite now", stepIndex = 3)
+        val tool2 = TrajectoryStep(
+            case = "toolCall",
+            tool = "run_command",
+            toolSummary = "Run unit tests",
+            command = "make test",
+            stepIndex = 4
+        )
 
-        waitUntil { vm.pendingApprovals.value.isNotEmpty() }
-        val item = vm.pendingApprovals.value.first()
-        assertEquals("req-epoch-test-01", item.approvalId)
-        assertEquals("run_command", item.toolName)
-        assertEquals("make test", item.command)
+        // 1. While streaming before real chat output arrives: ThoughtGroup has isCompleted == false
+        val streamingGrouped = groupSteps(listOf(promptStep, thought1, tool1, thought2, tool2))
+        assertEquals(2, streamingGrouped.size)
+        assertTrue(streamingGrouped[0] is ChatItem.SingleStep)
+        assertTrue(streamingGrouped[1] is ChatItem.ThoughtGroup)
+        val streamingGroup = streamingGrouped[1] as ChatItem.ThoughtGroup
+        assertFalse("Trailing group without chat output must have isCompleted=false", streamingGroup.isCompleted)
+        assertEquals(4, streamingGroup.steps.size)
+        assertEquals(2, streamingGroup.toolCallCount)
+        assertEquals(2, streamingGroup.thoughtCount)
+        assertEquals(3, streamingGroup.steps.indexOfLast { it.stepCase == StepCase.TOOL_CALL })
 
-        // Verify epoch-second countdown calculation (must not be 0 from ms-minus-seconds bug)
-        val secondsFromRemaining = item.computeSecondsLeft(nowEpochSeconds)
-        assertEquals(48L, secondsFromRemaining)
+        // 2. Once real chat output (TEXT / MARKDOWN_CHUNK) arrives: ThoughtGroup has isCompleted == true
+        val finalReplyStep = TrajectoryStep(case = "text", value = "Build and tests passed cleanly!", stepIndex = 5)
+        val completedGrouped = groupSteps(listOf(promptStep, thought1, tool1, thought2, tool2, finalReplyStep))
+        assertEquals(3, completedGrouped.size)
+        assertTrue(completedGrouped[0] is ChatItem.SingleStep)
+        assertEquals(StepCase.USER_INPUT, (completedGrouped[0] as ChatItem.SingleStep).step.stepCase)
+        assertTrue(completedGrouped[1] is ChatItem.ThoughtGroup)
+        val completedGroup = completedGrouped[1] as ChatItem.ThoughtGroup
+        assertTrue("Group followed by real chat output must have isCompleted=true", completedGroup.isCompleted)
+        assertEquals(2, completedGroup.toolCallCount)
+        assertEquals(2, completedGroup.thoughtCount)
+        assertTrue(completedGrouped[2] is ChatItem.SingleStep)
+        assertEquals(StepCase.TEXT, (completedGrouped[2] as ChatItem.SingleStep).step.stepCase)
 
-        val itemWithoutServerRemaining = item.copy(remainingSeconds = -1)
-        val computedFromEpochSec = itemWithoutServerRemaining.computeSecondsLeft(nowEpochSeconds)
-        assertEquals(48L, computedFromEpochSec)
-
-        // Resolve approval decision
-        val ok = vm.submitDecisionSuspend(item.approvalId, "allow")
-        assertTrue("submitDecisionSuspend must succeed", ok)
-        waitUntil { recordedRequests.any { it.path == "/api/approvals/decision" } }
-
-        val decReq = recordedRequests.first { it.path == "/api/approvals/decision" }
-        assertEquals("tok-live-verified-001", decReq.mobileToken)
-        assertTrue(decReq.body.contains("\"approval_id\":\"req-epoch-test-01\""))
-        assertTrue("Resolved approval must be removed from UI state", vm.pendingApprovals.value.isEmpty())
+        // 3. Transitional TEXT accompanying a tool call breaks and completes the preceding group
+        val midTextStep = TrajectoryStep(case = "text", value = "Compilation succeeded, running tests...", stepIndex = 3)
+        val splitGrouped = groupSteps(listOf(promptStep, thought1, tool1, midTextStep, thought2, tool2, finalReplyStep))
+        assertEquals(5, splitGrouped.size)
+        assertTrue((splitGrouped[1] as ChatItem.ThoughtGroup).isCompleted)
+        assertEquals(StepCase.TEXT, (splitGrouped[2] as ChatItem.SingleStep).step.stepCase)
+        assertTrue((splitGrouped[3] as ChatItem.ThoughtGroup).isCompleted)
+        assertEquals(StepCase.TEXT, (splitGrouped[4] as ChatItem.SingleStep).step.stepCase)
     }
 
     @Test

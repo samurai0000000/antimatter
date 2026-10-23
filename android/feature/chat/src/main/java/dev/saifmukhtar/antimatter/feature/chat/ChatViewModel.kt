@@ -825,7 +825,6 @@ class ChatViewModel @Inject constructor(
                         val hasFinalReply = candidates.any { step ->
                             when (step.stepCase) {
                                 StepCase.ERROR_MESSAGE,
-                                StepCase.APPROVAL_INTERACTION,
                                 StepCase.ASK_QUESTION,
                                 StepCase.ELICITATION -> true
                                 StepCase.TEXT,
