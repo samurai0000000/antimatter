@@ -14,6 +14,7 @@ import dev.saifmukhtar.antimatter.core.network.OutboundMessage
 import dev.saifmukhtar.antimatter.core.network.QuestionResponsePayload
 import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
 import dev.saifmukhtar.antimatter.core.network.StepCase
+import dev.saifmukhtar.antimatter.core.network.ConversationSummary
 import dev.saifmukhtar.antimatter.core.data.GzipUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -348,8 +349,10 @@ class ChatViewModel @Inject constructor(
 
     private fun rebuildHistoryFromMap(localEntities: List<ConversationEntity>? = null) {
         val combined = LinkedHashMap<String, dev.saifmukhtar.antimatter.core.network.ConversationSummary>()
+        val activeCid = _uiState.value.conversationId
         for ((id, summary) in richSummaryMap) {
-            if (isPlaceholderOrSubagentTitle(summary.title) &&
+            if (id != activeCid &&
+                isPlaceholderOrSubagentTitle(summary.title) &&
                 summary.firstPrompt.isBlank() &&
                 summary.lastPrompt.isBlank()
             ) {
@@ -358,7 +361,8 @@ class ChatViewModel @Inject constructor(
             combined[id] = summary.copy(timestamp = normalizeConversationTimestampMs(summary.timestamp))
         }
         localEntities?.forEach { entity ->
-            if (isPlaceholderOrSubagentTitle(entity.title) &&
+            if (entity.id != activeCid &&
+                isPlaceholderOrSubagentTitle(entity.title) &&
                 richSummaryMap[entity.id]?.firstPrompt.isNullOrBlank() &&
                 richSummaryMap[entity.id]?.lastPrompt.isNullOrBlank()
             ) {
@@ -391,7 +395,6 @@ class ChatViewModel @Inject constructor(
             }
         }
         val sorted = sortConversations(combined.values.toList())
-        val activeCid = _uiState.value.conversationId
         val resolvedConvModel = if (!activeCid.isNullOrBlank() && activeCid != "new") {
             richSummaryMap[activeCid]?.model?.takeIf { it.isNotBlank() } ?: _uiState.value.conversationModel
         } else {
@@ -796,19 +799,43 @@ class ChatViewModel @Inject constructor(
                         environment = message.environment
                     )
                 }
-                
+
+                val cid = message.conversationId
+                if (!cid.isNullOrBlank() && cid != "new") {
+                    val existingSummary = richSummaryMap[cid]
+                    val mergedSummary = if (existingSummary != null) {
+                        existingSummary.copy(
+                            source = resolvedSource.ifBlank { existingSummary.source },
+                            model = resolvedConvModel.ifBlank { existingSummary.model },
+                            workspace = message.workspace.ifBlank { existingSummary.workspace },
+                            stepCount = maxOf(existingSummary.stepCount, message.stepCount)
+                        )
+                    } else {
+                        ConversationSummary(
+                            id = cid,
+                            title = "",
+                            timestamp = System.currentTimeMillis(),
+                            source = resolvedSource.ifBlank { "CLI" },
+                            workspace = message.workspace,
+                            model = resolvedConvModel,
+                            stepCount = message.stepCount
+                        )
+                    }
+                    richSummaryMap[cid] = mergedSummary
+                    rebuildHistoryFromMap()
+                }
+
                 // Truncate local steps if server says there are fewer (due to edit)
-                message.conversationId?.let { cid ->
+                cid?.let { c ->
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
-                            appDao.deleteStepsFromIndex(cid, message.stepCount)
-                            appDao.updateStepCount(cid, message.stepCount)
+                            appDao.deleteStepsFromIndex(c, message.stepCount)
+                            appDao.updateStepCount(c, message.stepCount)
                         } catch (e: Exception) {
                             android.util.Log.e("ChatViewModel", "SessionState DB update error", e)
                         }
                     }
                 }
-                val cid = message.conversationId
                 // Only subscribe if the conversation actually changed
                 if (cid != null && cid != previousConversationId) {
                     startIncrementalPolling(cid)
@@ -1070,10 +1097,7 @@ class ChatViewModel @Inject constructor(
                 if (!message.isSearchResult) {
                     hasSyncedServerHistory = true
                     val validServerIds = validFiltered.map { it.id }.toSet()
-                    val activeGeneratingId = _uiState.value.conversationId?.takeIf { _uiState.value.isGenerating }
-                    val staleKeys = richSummaryMap.keys.filter { key ->
-                        key !in validServerIds && key != activeGeneratingId
-                    }
+                    val staleKeys = richSummaryMap.keys.filter { it !in validServerIds }
                     staleKeys.forEach { richSummaryMap.remove(it) }
                 }
                 validFiltered.forEach { summary ->
@@ -1124,9 +1148,13 @@ class ChatViewModel @Inject constructor(
                         android.util.Log.e("ChatViewModel", "HistoryList DB insert error", e)
                     }
                 }
-                // Auto-select latest conversation if none active yet
-                if (_uiState.value.conversationId == null && !_uiState.value.isGenerating && validFiltered.isNotEmpty()) {
-                    subscribeConversation(validFiltered.first().id)
+                // Auto-select latest conversation if none active yet or if current session was pruned
+                val currentConvId = _uiState.value.conversationId
+                if (!message.isSearchResult && validFiltered.isNotEmpty() && !_uiState.value.isGenerating) {
+                    val validServerIds = validFiltered.map { it.id }.toSet()
+                    if (currentConvId == null || (currentConvId != "new" && currentConvId !in validServerIds)) {
+                        subscribeConversation(validFiltered.first().id)
+                    }
                 }
             }
             is InboundMessage.ArtifactsList -> {

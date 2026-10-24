@@ -494,12 +494,14 @@ class BridgeWebSocket(private val context: Context) {
                                     } else if (status == "compacted") {
                                         val parsedSteps = parseTranscriptStepsFromJson(json, message.agentId ?: "antigravity")
                                         val resolvedCompactedCid = cid.ifBlank { reqCid }
+                                        val respWorkspace = optJsonString(json, "workspace") ?: ""
                                         _messages.emit(InboundMessage.SessionState(
                                             conversationId = resolvedCompactedCid,
                                             stepCount = parsedSteps.size,
                                             model = respModel.ifBlank { message.model },
                                             agentId = message.agentId ?: "antigravity",
-                                            source = respSource
+                                            source = respSource,
+                                            workspace = respWorkspace
                                         ))
                                         if (parsedSteps.isNotEmpty()) {
                                             _messages.emit(InboundMessage.StepBatch(
@@ -552,8 +554,6 @@ class BridgeWebSocket(private val context: Context) {
                                                 index = -1,
                                                 agentId = message.agentId ?: "antigravity"
                                             ))
-                                            _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
-                                        } else if (status == "dispatched") {
                                             _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
                                         }
                                     }
@@ -639,23 +639,75 @@ class BridgeWebSocket(private val context: Context) {
                                     0
                                 }
                                 val source = optJsonString(json, "source") ?: ""
+                                val workspace = optJsonString(json, "workspace") ?: ""
                                 val steps = parseTranscriptStepsFromJson(json, message.agentId)
 
-                                if (message.lastKnownStepCount == 0 && (message.sinceStepIndex == null || message.sinceStepIndex < 0)) {
-                                    _messages.emit(InboundMessage.SessionState(
-                                        conversationId = cid,
-                                        model = model,
-                                        stepCount = stepCount,
-                                        agentId = message.agentId,
-                                        source = source
-                                    ))
-                                }
-                                if (steps.isNotEmpty() || message.sinceStepIndex == null || message.sinceStepIndex < 0) {
-                                    _messages.emit(InboundMessage.StepBatch(
-                                        steps = steps,
-                                        agentId = message.agentId,
-                                        conversationId = cid
-                                    ))
+                                if (message.sinceStepIndex != null && message.sinceStepIndex >= 0 && stepCount > 0 && stepCount <= message.sinceStepIndex) {
+                                    val fullReq = Request.Builder()
+                                        .url("$url/api/agent/transcript?id=${message.conversationId}")
+                                        .header("User-Agent", "aimon-mobile/1.0")
+                                        .apply {
+                                            if (!token.isNullOrBlank()) {
+                                                header("X-Mobile-Token", token!!)
+                                                header("Authorization", "Bearer $token")
+                                            }
+                                        }
+                                        .get()
+                                        .build()
+                                    val fullResp = client.newCall(fullReq).execute()
+                                    val fullBody = fullResp.body?.string() ?: ""
+                                    if (fullResp.isSuccessful) {
+                                        val fullJson = JsonParser.parseString(fullBody).asJsonObject
+                                        val fullCid = if (fullJson.has("conversationId") && !fullJson.get("conversationId").isJsonNull) {
+                                            fullJson.get("conversationId").asString
+                                        } else {
+                                            cid
+                                        }
+                                        val fullModel = if (fullJson.has("model") && !fullJson.get("model").isJsonNull) {
+                                            fullJson.get("model").asString
+                                        } else {
+                                            model
+                                        }
+                                        val fullStepCount = if (fullJson.has("stepCount") && !fullJson.get("stepCount").isJsonNull) {
+                                            fullJson.get("stepCount").asInt
+                                        } else {
+                                            0
+                                        }
+                                        val fullSource = optJsonString(fullJson, "source") ?: source
+                                        val fullWorkspace = optJsonString(fullJson, "workspace") ?: workspace
+                                        val fullSteps = parseTranscriptStepsFromJson(fullJson, message.agentId)
+                                        _messages.emit(InboundMessage.SessionState(
+                                            conversationId = fullCid,
+                                            model = fullModel,
+                                            stepCount = fullStepCount,
+                                            agentId = message.agentId,
+                                            source = fullSource,
+                                            workspace = fullWorkspace
+                                        ))
+                                        _messages.emit(InboundMessage.StepBatch(
+                                            steps = fullSteps,
+                                            agentId = message.agentId,
+                                            conversationId = fullCid
+                                        ))
+                                    }
+                                } else {
+                                    if (message.lastKnownStepCount == 0 && (message.sinceStepIndex == null || message.sinceStepIndex < 0)) {
+                                        _messages.emit(InboundMessage.SessionState(
+                                            conversationId = cid,
+                                            model = model,
+                                            stepCount = stepCount,
+                                            agentId = message.agentId,
+                                            source = source,
+                                            workspace = workspace
+                                        ))
+                                    }
+                                    if (steps.isNotEmpty() || message.sinceStepIndex == null || message.sinceStepIndex < 0) {
+                                        _messages.emit(InboundMessage.StepBatch(
+                                            steps = steps,
+                                            agentId = message.agentId,
+                                            conversationId = cid
+                                        ))
+                                    }
                                 }
                             }
                         }

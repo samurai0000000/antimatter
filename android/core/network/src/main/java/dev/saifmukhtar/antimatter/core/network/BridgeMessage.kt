@@ -94,7 +94,8 @@ sealed class InboundMessage {
         val cloudflareUrl: String? = null,
         val environment: String? = null,
         val agentId: String? = null,
-        val source: String = ""
+        val source: String = "",
+        val workspace: String = ""
     ) : InboundMessage()
 
     data class Step(

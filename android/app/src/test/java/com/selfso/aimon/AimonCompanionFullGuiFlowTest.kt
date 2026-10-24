@@ -1316,6 +1316,18 @@ class AimonCompanionFullGuiFlowTest {
 
         var compactMode = "in_place"
         var claudeCompactedInPlace = false
+        val initNowSec = System.currentTimeMillis() / 1000L
+        registerRoute("/api/agent/conversations", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "conversations": [
+                {"id": "conv-claude-01", "title": "Claude Main Session", "source": "claude", "workspace": "aimon", "timestamp": $initNowSec},
+                {"id": "conv-cursor-02", "title": "Cursor Feature Session", "source": "cursor", "workspace": "aimon", "timestamp": ${initNowSec - 100}, "model": ""},
+                {"id": "conv-subagent-orphan", "title": "Subagent Session", "source": "cursor", "workspace": "aimon", "timestamp": ${initNowSec - 200}}
+              ]
+            }
+            """.trimIndent()
+        }
         registerRoute("/api/agent/transcript", requireToken = "tok-live-verified-001") { rec ->
             val q = rec.query ?: ""
             when {
@@ -1345,15 +1357,14 @@ class AimonCompanionFullGuiFlowTest {
                       ]
                     }
                 """.trimIndent()
-                q.contains("id=conv-cursor-02-compacted") -> """
+                q.contains("id=conv-subagent-orphan") -> """
                     {
-                      "conversationId": "conv-cursor-02-compacted",
+                      "conversationId": "conv-subagent-orphan",
                       "source": "cursor",
                       "model": "sonnet-4.6",
-                      "stepCount": 2,
+                      "stepCount": 1,
                       "steps": [
-                        {"stepIndex": 0, "type": "USER_INPUT", "text": "/compact"},
-                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Compacted Cursor session checkpoint."}
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "Subagent step"}
                       ]
                     }
                 """.trimIndent()
@@ -1397,17 +1408,12 @@ class AimonCompanionFullGuiFlowTest {
                 } else {
                     """
                     {
-                      "status": "compacted",
-                      "compactedFrom": "$cid",
+                      "status": "command_response",
                       "agentId": "cursor",
                       "source": "cursor",
-                      "conversationId": "conv-cursor-02-compacted",
+                      "conversationId": "$cid",
                       "command": "/compact",
-                      "steps": [
-                        {"stepIndex": 0, "type": "USER_INPUT", "text": "/compact"},
-                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Compacted Cursor session checkpoint."}
-                      ],
-                      "response": "Compacted Cursor session checkpoint."
+                      "response": "Cursor manages context compaction automatically in the IDE and CLI. Full conversation history for this session is preserved."
                     }
                     """.trimIndent()
                 }
@@ -1448,7 +1454,7 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals("claude", chatVm.uiState.value.activeProvider)
         assertEquals("claude", chatVm.resolveEffectiveProvider())
 
-        // 4. Subscribe to Cursor session and run rollover /compact -> switches conversationId to conv-cursor-02-compacted
+        // 4. Subscribe to Cursor session and run Cursor /compact -> command_response preserving session
         chatVm.selectConversation("conv-cursor-02")
         waitUntil {
             chatVm.uiState.value.conversationId == "conv-cursor-02" &&
@@ -1456,20 +1462,54 @@ class AimonCompanionFullGuiFlowTest {
                 chatVm.uiState.value.activeSessionSource == "cursor"
         }
         assertEquals("cursor", chatVm.resolveEffectiveProvider())
+        // Verify SessionState upserted richSummaryMap and uiState.history has conv-cursor-02 with source cursor and real model sonnet-4.6 even when /api/agent/conversations had model: ""
+        assertEquals(
+            "cursor",
+            chatVm.uiState.value.history.firstOrNull { it.id == "conv-cursor-02" }?.source
+        )
+        assertEquals(
+            "sonnet-4.6",
+            chatVm.uiState.value.history.firstOrNull { it.id == "conv-cursor-02" }?.model
+        )
 
-        compactMode = "rollover"
+        compactMode = "command_response"
         chatVm.sendMessage("/compact focus on auth")
         waitUntil {
-            chatVm.uiState.value.conversationId == "conv-cursor-02-compacted" &&
-                !chatVm.uiState.value.isGenerating &&
-                chatVm.uiState.value.steps.any { it.value?.contains("Compacted Cursor session checkpoint") == true }
+            !chatVm.uiState.value.isGenerating &&
+                chatVm.uiState.value.steps.any { it.value?.contains("Cursor manages context compaction automatically") == true }
         }
+        assertEquals("conv-cursor-02", chatVm.uiState.value.conversationId)
+        assertTrue(chatVm.uiState.value.steps.any { it.value?.contains("Initial Cursor prompt") == true })
+        assertTrue(chatVm.uiState.value.steps.any { it.value?.contains("Initial Cursor reply") == true })
         assertEquals("cursor", chatVm.resolveEffectiveProvider())
 
-        // /new on Cursor session preserves "cursor" provider
+        // 5. Select a stale subagent session that gets omitted from HISTORY_LIST -> ChatViewModel auto-switches to first valid main session
+        chatVm.selectConversation("conv-subagent-orphan")
+        waitUntil { chatVm.uiState.value.conversationId == "conv-subagent-orphan" }
+
+        val pruneNowSec = System.currentTimeMillis() / 1000L
+        registerRoute("/api/agent/conversations", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "conversations": [
+                {"id": "conv-claude-01", "title": "Claude Main Session", "source": "claude", "workspace": "aimon", "timestamp": $pruneNowSec},
+                {"id": "conv-cursor-02", "title": "Cursor Feature Session", "source": "cursor", "workspace": "aimon", "timestamp": ${pruneNowSec - 100}},
+                {"id": "conv-subagent-orphan", "title": "", "source": "cursor", "workspace": "aimon", "timestamp": ${pruneNowSec - 200}}
+              ]
+            }
+            """.trimIndent()
+        }
+        chatVm.refreshHistory()
+        waitUntil {
+            chatVm.uiState.value.conversationId == "conv-claude-01" &&
+                chatVm.uiState.value.history.none { it.id == "conv-subagent-orphan" }
+        }
+        assertEquals("conv-claude-01", chatVm.uiState.value.conversationId)
+
+        // /new on active session preserves active provider
         chatVm.sendMessage("/new")
         assertEquals("new", chatVm.uiState.value.conversationId)
-        assertEquals("cursor", chatVm.uiState.value.activeProvider)
+        assertEquals("claude", chatVm.uiState.value.activeProvider)
     }
 
     @Test
@@ -1535,6 +1575,17 @@ class AimonCompanionFullGuiFlowTest {
                     }
                   ]
                 }
+              ]
+            }
+            """.trimIndent()
+        }
+
+        val grillNowSec = System.currentTimeMillis() / 1000L
+        registerRoute("/api/agent/conversations", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "conversations": [
+                {"id": "conv-grill-01", "title": "Grill Session", "source": "cli", "workspace": "aimon", "timestamp": $grillNowSec}
               ]
             }
             """.trimIndent()
