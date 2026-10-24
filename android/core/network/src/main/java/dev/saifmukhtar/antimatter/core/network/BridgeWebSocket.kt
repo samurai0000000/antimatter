@@ -901,7 +901,7 @@ class BridgeWebSocket(private val context: Context) {
             val resp = client.newCall(req).execute()
             val body = resp.body?.string() ?: ""
             if (resp.isSuccessful && body.isNotBlank()) {
-                val histMsg = parseHistoryListFromJson(body)
+                val histMsg = parseHistoryListFromJson(body, isSearchResult = query.isNotBlank())
                 _messages.emit(histMsg)
             }
         } catch (e: Exception) {
@@ -909,7 +909,7 @@ class BridgeWebSocket(private val context: Context) {
         }
     }
 
-    private fun parseHistoryListFromJson(body: String): InboundMessage.HistoryList {
+    private fun parseHistoryListFromJson(body: String, isSearchResult: Boolean = false): InboundMessage.HistoryList {
         val parsed = JsonParser.parseString(body)
         var agentId: String? = "antigravity"
         val convArray = when {
@@ -968,10 +968,14 @@ class BridgeWebSocket(private val context: Context) {
                     }
                 }
 
-                val effectiveTitle = rawTitle.takeIf { it.isNotBlank() }
+                val trimmedRawTitle = rawTitle.trim()
+                val isPlaceholderTitle = trimmedRawTitle.isEmpty() ||
+                    trimmedRawTitle.equals("Chat", ignoreCase = true) ||
+                    Regex("^Conversation [0-9a-fA-F]{8}$").matches(trimmedRawTitle)
+                val effectiveTitle = trimmedRawTitle.takeIf { !isPlaceholderTitle }
                     ?: firstPrompt.takeIf { it.isNotBlank() }?.take(80)
                     ?: lastPrompt.takeIf { it.isNotBlank() }?.take(80)
-                    ?: "Conversation ${id.take(8)}"
+                    ?: continue
 
                 summaries.add(
                     ConversationSummary(
@@ -996,7 +1000,11 @@ class BridgeWebSocket(private val context: Context) {
                 )
             }
         }
-        return InboundMessage.HistoryList(conversations = summaries, agentId = agentId)
+        return InboundMessage.HistoryList(
+            conversations = summaries,
+            agentId = agentId,
+            isSearchResult = isSearchResult
+        )
     }
 
     private fun optJsonBool(obj: com.google.gson.JsonObject?, key: String, defaultVal: Boolean = false): Boolean {

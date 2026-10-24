@@ -213,6 +213,16 @@ class ChatViewModel @Inject constructor(
 
         @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
         viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val snapshot = appDao.getAllConversationsSnapshot() ?: emptyList()
+                for (row in snapshot) {
+                    if (isPlaceholderOrSubagentTitle(row.title)) {
+                        appDao.deleteConversationById(row.id)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("ChatViewModel", "Initial conversation cleanup error: ${e.message}")
+            }
             _uiState.map { it.activeAgentId }.distinctUntilChanged().flatMapLatest { agentId ->
                 if (agentId != null) {
                     appDao.getConversationsForAgentFlow(agentId).catch { e ->
@@ -326,17 +336,39 @@ class ChatViewModel @Inject constructor(
         )
     }
 
+    @Volatile
+    private var hasSyncedServerHistory = false
+
+    private fun isPlaceholderOrSubagentTitle(title: String): Boolean {
+        val trimmed = title.trim()
+        return trimmed.isEmpty() ||
+            trimmed.equals("Chat", ignoreCase = true) ||
+            Regex("^Conversation [0-9a-fA-F]{8}$").matches(trimmed)
+    }
+
     private fun rebuildHistoryFromMap(localEntities: List<ConversationEntity>? = null) {
         val combined = LinkedHashMap<String, dev.saifmukhtar.antimatter.core.network.ConversationSummary>()
         for ((id, summary) in richSummaryMap) {
+            if (isPlaceholderOrSubagentTitle(summary.title) &&
+                summary.firstPrompt.isBlank() &&
+                summary.lastPrompt.isBlank()
+            ) {
+                continue
+            }
             combined[id] = summary.copy(timestamp = normalizeConversationTimestampMs(summary.timestamp))
         }
         localEntities?.forEach { entity ->
+            if (isPlaceholderOrSubagentTitle(entity.title) &&
+                richSummaryMap[entity.id]?.firstPrompt.isNullOrBlank() &&
+                richSummaryMap[entity.id]?.lastPrompt.isNullOrBlank()
+            ) {
+                return@forEach
+            }
             val existingRich = combined[entity.id]
             if (existingRich != null) {
                 val bestTitle = when {
-                    existingRich.title.isNotBlank() && existingRich.title != "Chat" -> existingRich.title
-                    entity.title.isNotBlank() && entity.title != "Chat" -> entity.title
+                    existingRich.title.isNotBlank() && !isPlaceholderOrSubagentTitle(existingRich.title) -> existingRich.title
+                    entity.title.isNotBlank() && !isPlaceholderOrSubagentTitle(entity.title) -> entity.title
                     else -> existingRich.title.ifBlank { entity.title }
                 }
                 val richTs = normalizeConversationTimestampMs(existingRich.timestamp)
@@ -347,7 +379,7 @@ class ChatViewModel @Inject constructor(
                 )
                 combined[entity.id] = merged
                 richSummaryMap[entity.id] = merged
-            } else {
+            } else if (!hasSyncedServerHistory) {
                 val fromEntity = dev.saifmukhtar.antimatter.core.network.ConversationSummary(
                     id = entity.id,
                     title = entity.title,
@@ -1030,26 +1062,55 @@ class ChatViewModel @Inject constructor(
             }
             is InboundMessage.HistoryList -> {
                 android.util.Log.d("ChatViewModel", "Received HISTORY_LIST with ${message.conversations.size} conversations")
-                message.conversations.forEach { summary ->
+                val validFiltered = message.conversations.filterNot { summary ->
+                    isPlaceholderOrSubagentTitle(summary.title) &&
+                        summary.firstPrompt.isBlank() &&
+                        summary.lastPrompt.isBlank()
+                }
+                if (!message.isSearchResult) {
+                    hasSyncedServerHistory = true
+                    val validServerIds = validFiltered.map { it.id }.toSet()
+                    val activeGeneratingId = _uiState.value.conversationId?.takeIf { _uiState.value.isGenerating }
+                    val staleKeys = richSummaryMap.keys.filter { key ->
+                        key !in validServerIds && key != activeGeneratingId
+                    }
+                    staleKeys.forEach { richSummaryMap.remove(it) }
+                }
+                validFiltered.forEach { summary ->
                     richSummaryMap[summary.id] = mergeSummaryWithRich(summary)
                 }
                 rebuildHistoryFromMap()
                 viewModelScope.launch(Dispatchers.IO) {
                     try {
-                        message.conversations.forEach { summary ->
+                        if (!message.isSearchResult) {
+                            val validServerIds = validFiltered.map { it.id }.toSet()
+                            val localRows = appDao.getAllConversationsSnapshot() ?: emptyList()
+                            for (row in localRows) {
+                                if (row.id !in validServerIds || isPlaceholderOrSubagentTitle(row.title)) {
+                                    appDao.deleteConversationById(row.id)
+                                }
+                            }
+                        }
+                        validFiltered.forEach { summary ->
                             val merged = richSummaryMap[summary.id] ?: summary
+                            if (isPlaceholderOrSubagentTitle(merged.title) &&
+                                merged.firstPrompt.isBlank() &&
+                                merged.lastPrompt.isBlank()
+                            ) {
+                                return@forEach
+                            }
                             val existing = appDao.getConversation(summary.id)
                             if (existing == null) {
                                 appDao.insertConversation(
                                     ConversationEntity(
                                         id = merged.id,
-                                        title = merged.title.ifBlank { "Chat" },
+                                        title = merged.title,
                                         timestamp = merged.timestamp,
                                         agentId = message.agentId ?: "antigravity",
                                         stepCount = merged.stepCount
                                     )
                                 )
-                            } else if (merged.title.isNotBlank() && merged.title != "Chat") {
+                            } else if (merged.title.isNotBlank() && !isPlaceholderOrSubagentTitle(merged.title)) {
                                 appDao.insertConversation(
                                     existing.copy(
                                         title = merged.title,
@@ -1064,8 +1125,8 @@ class ChatViewModel @Inject constructor(
                     }
                 }
                 // Auto-select latest conversation if none active yet
-                if (_uiState.value.conversationId == null && !_uiState.value.isGenerating && message.conversations.isNotEmpty()) {
-                    subscribeConversation(message.conversations.first().id)
+                if (_uiState.value.conversationId == null && !_uiState.value.isGenerating && validFiltered.isNotEmpty()) {
+                    subscribeConversation(validFiltered.first().id)
                 }
             }
             is InboundMessage.ArtifactsList -> {

@@ -134,7 +134,11 @@ sealed class InboundMessage {
     data class Error(val message: String = "", val agentId: String? = null) : InboundMessage()
     data class SystemAlert(val title: String = "", val body: String = "", val agentId: String? = null) : InboundMessage()
     data class SystemNotification(val title: String = "", val body: String = "", val agentId: String? = null) : InboundMessage()
-    data class HistoryList(val conversations: List<ConversationSummary> = emptyList(), val agentId: String? = null) : InboundMessage()
+    data class HistoryList(
+        val conversations: List<ConversationSummary> = emptyList(),
+        val agentId: String? = null,
+        val isSearchResult: Boolean = false
+    ) : InboundMessage()
     data class AuthResponse(val signature: String = "", val pubkey: String = "") : InboundMessage()
     data class ArtifactsList(val artifacts: List<FileNode> = emptyList(), val agentId: String? = null) : InboundMessage()
     data class AgentInfo(val id: String, val name: String, val status: String, val workspaceRoot: String? = null)

@@ -1551,10 +1551,30 @@ class AimonCompanionFullGuiFlowTest {
             """.trimIndent()
         }
 
+        val staleSubagentEntity = dev.saifmukhtar.antimatter.core.data.ConversationEntity(
+            id = "674e381e-26de-40eb-8eb3-84db42e61d34",
+            title = "Conversation 674e381e",
+            timestamp = 1760450000000L,
+            agentId = "antigravity",
+            stepCount = 4
+        )
+        val emptyTitleEntity = dev.saifmukhtar.antimatter.core.data.ConversationEntity(
+            id = "0c21caee-0000-0000-0000-000000000000",
+            title = "",
+            timestamp = 1760450001000L,
+            agentId = "antigravity",
+            stepCount = 0
+        )
+        val deletedIds = CopyOnWriteArrayList<String>()
         val mockUserPrefs = mock(UserPreferencesRepository::class.java)
         val mockDao = mock(AppDao::class.java)
         `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
-        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(listOf(staleSubagentEntity, emptyTitleEntity)))
+        `when`(mockDao.getAllConversationsSnapshot()).thenReturn(listOf(staleSubagentEntity, emptyTitleEntity))
+        `when`(mockDao.deleteConversationById(anyString())).thenAnswer { inv ->
+            deletedIds.add(inv.getArgument(0))
+            Unit
+        }
         `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
 
         val bridgeWebSocket = BridgeWebSocket(mockApplication)
@@ -1563,8 +1583,17 @@ class AimonCompanionFullGuiFlowTest {
         chatVm.selectConversation("conv-grill-01")
 
         waitUntil {
-            chatVm.uiState.value.steps.any { it.stepCase == StepCase.ASK_QUESTION }
+            chatVm.uiState.value.steps.any { it.stepCase == StepCase.ASK_QUESTION } &&
+                chatVm.uiState.value.history.isNotEmpty()
         }
+        assertFalse(
+            "Stale Room subagent rows must be purged from history",
+            chatVm.uiState.value.history.any { it.id == staleSubagentEntity.id || it.id == emptyTitleEntity.id }
+        )
+        assertTrue(
+            "Stale subagent rows must be deleted from Room DB",
+            deletedIds.contains(staleSubagentEntity.id) && deletedIds.contains(emptyTitleEntity.id)
+        )
 
         val steps = chatVm.uiState.value.steps
         assertFalse("ask_question must not be duplicated as a generic toolCall step", steps.any { it.stepCase == StepCase.TOOL_CALL && it.tool == "ask_question" })

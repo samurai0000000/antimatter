@@ -17,6 +17,12 @@ interface AppDao {
     @Query("SELECT * FROM conversations ORDER BY timestamp DESC")
     fun getAllConversationsFlow(): Flow<List<ConversationEntity>>
 
+    @Query("SELECT * FROM conversations")
+    suspend fun getAllConversationsSnapshot(): List<ConversationEntity>
+
+    @Query("DELETE FROM conversations WHERE id = :id")
+    suspend fun deleteConversationById(id: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAgent(agent: AgentEntity)
 
