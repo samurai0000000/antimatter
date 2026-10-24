@@ -153,7 +153,7 @@ fun SettingsScreen(
                         onCheckedChange = {
                             AimonAppPreferences.setSoundEnabled(context, it)
                             if (it) {
-                                AimonSoundPlayer.playPromptAnsweredChime()
+                                AimonSoundPlayer.playPromptAnsweredChime(context)
                             }
                         }
                     )

@@ -92,9 +92,9 @@ class AimonNotificationManager(private val context: Context) {
         // 1. Play Desktop IDE Chime Sound if enabled
         if (AimonAppPreferences.soundEnabled.value) {
             if (isQuestion) {
-                AimonSoundPlayer.playAgentQuestionChime()
+                AimonSoundPlayer.playAgentQuestionChime(context)
             } else {
-                AimonSoundPlayer.playPromptAnsweredChime()
+                AimonSoundPlayer.playPromptAnsweredChime(context)
             }
         }
 
