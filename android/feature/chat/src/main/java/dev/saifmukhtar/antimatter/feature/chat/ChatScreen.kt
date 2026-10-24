@@ -215,6 +215,7 @@ fun ChatScreen(
     onSearchHistory: (String) -> Unit,
     onSelectImage: (android.net.Uri?) -> Unit,
     onStepVisible: (Int) -> Unit,
+    onOpenSettings: () -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel()
 ) {
     val listState = rememberLazyListState()
@@ -225,6 +226,13 @@ fun ChatScreen(
     val artifactsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     val promptsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     val pickerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    LaunchedEffect(uiState.pendingOpenSettingsTab) {
+        if (uiState.pendingOpenSettingsTab) {
+            viewModel.consumeOpenSettingsTab()
+            onOpenSettings()
+        }
+    }
 
     val groupedItems = remember(uiState.steps) { groupSteps(uiState.steps) }
     val reversedItems = remember(groupedItems) { groupedItems.reversed() }
@@ -1172,6 +1180,77 @@ fun ChatScreen(
                         }
                     }
                 }
+            }
+
+            if (uiState.showModelPickerDialog) {
+                AlertDialog(
+                    onDismissRequest = { viewModel.setShowModelPickerDialog(false) },
+                    title = {
+                        Text(
+                            text = "Select AI Model (/model)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    text = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            AVAILABLE_MODEL_OPTIONS.forEach { option ->
+                                val isSelected = uiState.selectedModel.equals(option.id, ignoreCase = true) ||
+                                    (uiState.selectedModel == "default" && option.id == "default")
+                                Surface(
+                                    onClick = {
+                                        viewModel.selectModelOption(option.id, appendConfirmationStep = true)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) Color(0xFF1E1B4B) else Color(0xFF151722),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF6366F1) else Color(0xFF2D3348)
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = {
+                                                viewModel.selectModelOption(option.id, appendConfirmationStep = true)
+                                            }
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = option.label,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color.White
+                                            )
+                                            Text(
+                                                text = option.subtitle,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFF9CA3AF)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.setShowModelPickerDialog(false) }) {
+                            Text("Close")
+                        }
+                    }
+                )
             }
         }
     }

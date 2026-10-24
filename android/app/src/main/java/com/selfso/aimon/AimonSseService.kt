@@ -16,7 +16,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +38,7 @@ class AimonSseService : Service() {
     private var isRunning = false
     private var currentBaseUrl: String = ""
     private var currentToken: String = ""
+    private var lastEventSeq: Long = 0L
 
     private val sseHttpClient = OkHttpClient.Builder()
         .proxy(Proxy.NO_PROXY)
@@ -130,7 +130,7 @@ class AimonSseService : Service() {
         }
 
         if (baseUrl == currentBaseUrl && token == currentToken && streamJob?.isActive == true) {
-            promoteToForeground("Listening for real-time quota and telemetry events")
+            promoteToForeground("Listening for real-time session and quota events")
             return START_STICKY
         }
 
@@ -138,9 +138,43 @@ class AimonSseService : Service() {
         currentToken = token
         isRunning = true
         startSseLoop()
-        promoteToForeground("Listening for real-time quota and telemetry events")
+        promoteToForeground("Listening for real-time session and quota events")
 
         return START_STICKY
+    }
+
+    private fun fetchMissedNotifications(baseUrl: String, token: String) {
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/mobile/notifications?since=$lastEventSeq")
+                .header("User-Agent", "aimon-mobile/1.0")
+                .header("X-Mobile-Token", token)
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+            sseHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return
+                val body = resp.body?.string() ?: return
+                val root = JsonParser.parseString(body).asJsonObject
+                val latestSeq = root.get("latestSeq")?.takeIf { !it.isJsonNull }?.asLong ?: lastEventSeq
+                if (lastEventSeq == 0L) {
+                    // On initial service start, seed latestSeq so only future events notify
+                    lastEventSeq = latestSeq
+                    return
+                }
+                if (root.has("events") && root.get("events").isJsonArray) {
+                    for (elem in root.getAsJsonArray("events")) {
+                        if (!elem.isJsonObject) continue
+                        val obj = elem.asJsonObject
+                        val seq = obj.get("seq")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                        if (seq > lastEventSeq) {
+                            lastEventSeq = seq
+                        }
+                        handleSseEvent("message", obj.toString(), notificationManager)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     private fun startSseLoop() {
@@ -163,6 +197,8 @@ class AimonSseService : Service() {
                     delay(3000)
                     continue
                 }
+
+                fetchMissedNotifications(baseUrl, token)
 
                 val sseUrl = "$baseUrl/sse?profile=mobile"
                 val reqBuilder = Request.Builder()
@@ -253,7 +289,7 @@ class AimonSseService : Service() {
         fun handleSseEvent(
             eventType: String,
             rawData: String,
-            @Suppress("UNUSED_PARAMETER") notificationManager: AimonNotificationManager? = null
+            notificationManager: AimonNotificationManager? = null
         ) {
             if (!rawData.startsWith("{")) return
             try {
@@ -261,6 +297,25 @@ class AimonSseService : Service() {
                 val type = root.get("type")?.takeIf { !it.isJsonNull }?.asString ?: eventType
                 when (type) {
                     "quota_update", "telemetry_sample" -> {
+                        AimonViewModel.notifyRefreshRequested()
+                    }
+                    "agent_notification" -> {
+                        val event = root.get("event")?.takeIf { !it.isJsonNull }?.asString ?: "prompt_answered"
+                        val cid = root.get("conversationId")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        val source = root.get("source")?.takeIf { !it.isJsonNull }?.asString ?: "cli"
+                        val title = root.get("title")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        val workspace = root.get("workspace")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        val snippet = root.get("snippet")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        val stepIndex = root.get("stepIndex")?.takeIf { !it.isJsonNull }?.asInt ?: -1
+                        notificationManager?.notifyAgentSessionEvent(
+                            event = event,
+                            conversationId = cid,
+                            source = source,
+                            title = title,
+                            workspace = workspace,
+                            snippet = snippet,
+                            stepIndex = stepIndex
+                        )
                         AimonViewModel.notifyRefreshRequested()
                     }
                 }

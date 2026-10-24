@@ -6,8 +6,13 @@
 
 package com.selfso.aimon
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.*
@@ -26,15 +31,39 @@ import dev.saifmukhtar.antimatter.core.ui.theme.AntimatterTheme
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
+    private val currentIntentState = mutableStateOf<Intent?>(null)
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AimonAppPreferences.init(this)
+        currentIntentState.value = intent
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        setContent {
-            var isAuthenticated by remember { mutableStateOf(false) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            AimonAppPreferences.notificationsEnabled.value
+        ) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
 
-            LaunchedEffect(Unit) {
-                if (!isAuthenticated) {
+        setContent {
+            val biometricLockRequired by AimonAppPreferences.biometricLockEnabled.collectAsState()
+            var isAuthenticated by remember { mutableStateOf(!biometricLockRequired) }
+            val activeIntent by currentIntentState
+
+            LaunchedEffect(biometricLockRequired) {
+                if (!biometricLockRequired) {
+                    isAuthenticated = true
+                } else if (!isAuthenticated) {
                     showBiometricPrompt { success ->
                         isAuthenticated = success
                     }
@@ -47,7 +76,7 @@ class MainActivity : FragmentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     if (isAuthenticated) {
-                        AimonNavigation(intent = intent)
+                        AimonNavigation(intent = activeIntent)
                     } else {
                         Box(
                             modifier = Modifier
@@ -77,6 +106,22 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        currentIntentState.value = intent
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AimonAppPreferences.isAppInForeground = true
+    }
+
+    override fun onPause() {
+        AimonAppPreferences.isAppInForeground = false
+        super.onPause()
     }
 
     fun showBiometricPrompt(onResult: (Boolean) -> Unit) {

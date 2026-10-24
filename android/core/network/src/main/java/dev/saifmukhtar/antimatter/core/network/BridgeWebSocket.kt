@@ -466,30 +466,51 @@ class BridgeWebSocket(private val context: Context) {
                                 try {
                                     val json = JsonParser.parseString(body).asJsonObject
                                     val cid = json.get("conversationId")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                                    if (cid.isNotBlank() && cid != "new") {
-                                        _messages.emit(InboundMessage.Generating(
-                                            conversationId = cid,
+                                    val status = json.get("status")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                    if (status == "cleared") {
+                                        _messages.emit(InboundMessage.SessionState(
+                                            conversationId = "new",
+                                            stepCount = 0,
+                                            model = "default",
                                             agentId = message.agentId ?: "antigravity"
                                         ))
-                                    }
-                                    if (json.has("steps") && json.get("steps").isJsonArray) {
-                                        val parsedSteps = parseTranscriptStepsFromJson(json, message.agentId ?: "antigravity")
-                                        if (parsedSteps.isNotEmpty()) {
-                                            _messages.emit(InboundMessage.StepBatch(
-                                                steps = parsedSteps,
-                                                agentId = message.agentId ?: "antigravity",
-                                                conversationId = cid.ifBlank { null }
-                                            ))
-                                        }
-                                        _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
-                                    } else if (json.has("response") && json.get("response").isJsonPrimitive) {
+                                        _messages.emit(InboundMessage.ResponseComplete(
+                                            conversationId = "new",
+                                            agentId = message.agentId ?: "antigravity"
+                                        ))
+                                    } else if (status == "command_response" && json.has("response") && json.get("response").isJsonPrimitive) {
                                         val respText = json.get("response").asString
                                         _messages.emit(InboundMessage.Step(
-                                            step = TrajectoryStep(case = "text", value = respText),
+                                            step = TrajectoryStep(case = "text", value = respText, stepIndex = -1),
                                             index = -1,
                                             agentId = message.agentId ?: "antigravity"
                                         ))
-                                        _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                    } else {
+                                        if (cid.isNotBlank() && cid != "new") {
+                                            _messages.emit(InboundMessage.Generating(
+                                                conversationId = cid,
+                                                agentId = message.agentId ?: "antigravity"
+                                            ))
+                                        }
+                                        if (json.has("steps") && json.get("steps").isJsonArray) {
+                                            val parsedSteps = parseTranscriptStepsFromJson(json, message.agentId ?: "antigravity")
+                                            if (parsedSteps.isNotEmpty()) {
+                                                _messages.emit(InboundMessage.StepBatch(
+                                                    steps = parsedSteps,
+                                                    agentId = message.agentId ?: "antigravity",
+                                                    conversationId = cid.ifBlank { null }
+                                                ))
+                                            }
+                                            _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                        } else if (json.has("response") && json.get("response").isJsonPrimitive) {
+                                            val respText = json.get("response").asString
+                                            _messages.emit(InboundMessage.Step(
+                                                step = TrajectoryStep(case = "text", value = respText),
+                                                index = -1,
+                                                agentId = message.agentId ?: "antigravity"
+                                            ))
+                                            _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                        }
                                     }
                                 } catch (e: Exception) {
                                     Log.e("BridgeWebSocket", "Error parsing prompt response", e)

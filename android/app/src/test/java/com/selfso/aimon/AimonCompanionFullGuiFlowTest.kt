@@ -28,6 +28,7 @@ import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
 import dev.saifmukhtar.antimatter.feature.chat.ChatItem
 import dev.saifmukhtar.antimatter.feature.chat.ChatViewModel
 import dev.saifmukhtar.antimatter.feature.chat.groupSteps
+import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalog
 import dev.saifmukhtar.antimatter.feature.files.FilesViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -41,6 +42,7 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import org.mockito.ArgumentMatchers.anyBoolean
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito.mock
@@ -120,6 +122,17 @@ class AimonCompanionFullGuiFlowTest {
             val k = inv.getArgument<String>(0)
             val def = inv.getArgument<String?>(1)
             prefsBacking[k] ?: def
+        }
+        `when`(mockEditor.putBoolean(anyString(), anyBoolean())).thenAnswer { inv ->
+            val k = inv.getArgument<String>(0)
+            val v = inv.getArgument<Boolean>(1)
+            prefsBacking[k] = v.toString()
+            mockEditor
+        }
+        `when`(mockPrefs.getBoolean(anyString(), anyBoolean())).thenAnswer { inv ->
+            val k = inv.getArgument<String>(0)
+            val def = inv.getArgument<Boolean>(1)
+            prefsBacking[k]?.toBooleanStrictOrNull() ?: def
         }
 
         setupServerRoutes()
@@ -495,6 +508,29 @@ class AimonCompanionFullGuiFlowTest {
                   "path": "Makefile",
                   "content": "all:\n\tcmake --build build\n",
                   "language": "makefile"
+                }
+                """.trimIndent()
+            }
+        }
+
+        registerRoute("/api/agent/prompt", requireToken = expectedToken) { rec ->
+            val json = JsonParser.parseString(rec.body).asJsonObject
+            val prompt = json.get("prompt")?.asString ?: ""
+            if (prompt.trim() == "/help") {
+                """
+                {
+                  "status": "command_response",
+                  "conversationId": "conv-antigravity-001",
+                  "command": "/help",
+                  "response": "### Available Slash Commands\n- `/clear` — Clear chat\n- `/model` — Switch model\n- `/compact` — Compact context"
+                }
+                """.trimIndent()
+            } else {
+                """
+                {
+                  "status": "completed",
+                  "conversationId": "conv-antigravity-001",
+                  "response": "Processed prompt: $prompt"
                 }
                 """.trimIndent()
             }
@@ -1014,6 +1050,89 @@ class AimonCompanionFullGuiFlowTest {
             httpServer.stop(0)
             tempCacheDir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun testSlashCommandsModelPickerAndSettingsPreferences() = runBlocking {
+        // 1. Verify slash command auto-complete catalog & tap behavior
+        val cmds = slashCommandCatalog.associateBy { it.command }
+        assertTrue(cmds.containsKey("/clear"))
+        assertTrue(cmds.containsKey("/model"))
+        assertTrue(cmds.containsKey("/compact"))
+        assertTrue(cmds.containsKey("/help"))
+        assertTrue(cmds.containsKey("/usage"))
+        assertTrue(cmds.containsKey("/credits"))
+        assertTrue(cmds.containsKey("/agents"))
+        assertTrue(cmds.containsKey("/skills"))
+        assertTrue(cmds.containsKey("/settings"))
+        assertTrue(cmds.containsKey("/plan"))
+        assertTrue(cmds.containsKey("/grill-me"))
+        assertTrue(cmds.containsKey("/goal"))
+        assertTrue(cmds["/clear"]!!.executeImmediatelyOnTap)
+        assertTrue(cmds["/model"]!!.executeImmediatelyOnTap)
+        assertTrue(cmds["/compact"]!!.executeImmediatelyOnTap)
+        assertFalse(cmds["/plan"]!!.executeImmediatelyOnTap)
+        assertFalse(cmds["/grill-me"]!!.executeImmediatelyOnTap)
+
+        // 2. Verify Settings preferences switches (Notifications, Sound, Vibration, Default Model, Biometric Lock)
+        AimonAppPreferences.init(mockApplication)
+        AimonAppPreferences.setNotificationsEnabled(mockApplication, false)
+        assertFalse(AimonAppPreferences.notificationsEnabled.value)
+        AimonAppPreferences.setNotificationsEnabled(mockApplication, true)
+        assertTrue(AimonAppPreferences.notificationsEnabled.value)
+
+        AimonAppPreferences.setSoundEnabled(mockApplication, false)
+        assertFalse(AimonAppPreferences.soundEnabled.value)
+        AimonAppPreferences.setSoundEnabled(mockApplication, true)
+        assertTrue(AimonAppPreferences.soundEnabled.value)
+
+        AimonAppPreferences.setVibrationEnabled(mockApplication, false)
+        assertFalse(AimonAppPreferences.vibrationEnabled.value)
+        AimonAppPreferences.setVibrationEnabled(mockApplication, true)
+        assertTrue(AimonAppPreferences.vibrationEnabled.value)
+
+        AimonAppPreferences.setDefaultModelId(mockApplication, "gemini-4-argon-high")
+        assertEquals("gemini-4-argon-high", AimonAppPreferences.defaultModelId.value)
+
+        // 3. Verify ChatViewModel client-side & server-side slash commands
+        val mockUserPrefs = mock(UserPreferencesRepository::class.java)
+        val mockDao = mock(AppDao::class.java)
+        `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+
+        val bridgeWebSocket = BridgeWebSocket(mockApplication)
+        val chatVm = ChatViewModel(mockApplication, bridgeWebSocket, mockUserPrefs, mockDao)
+        chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
+
+        // /model (bare) opens model picker dialog without sending network prompt
+        chatVm.sendMessage("/model")
+        assertTrue(chatVm.uiState.value.showModelPickerDialog)
+        chatVm.setShowModelPickerDialog(false)
+        assertFalse(chatVm.uiState.value.showModelPickerDialog)
+
+        // /model <arg> switches model and appends confirmation step
+        chatVm.sendMessage("/model claude-opus-5-5-high")
+        assertEquals("claude-opus-5-5-high", chatVm.uiState.value.selectedModel)
+        assertTrue(chatVm.uiState.value.steps.any { it.value?.contains("claude-opus-5-5-high") == true })
+
+        // /settings sets pendingOpenSettingsTab = true
+        chatVm.sendMessage("/settings")
+        assertTrue(chatVm.uiState.value.pendingOpenSettingsTab)
+        chatVm.consumeOpenSettingsTab()
+        assertFalse(chatVm.uiState.value.pendingOpenSettingsTab)
+
+        // /help executes against server and appends command_response markdown step
+        chatVm.sendMessage("/help")
+        waitUntil {
+            chatVm.uiState.value.steps.any { it.value?.contains("Available Slash Commands") == true }
+        }
+        assertFalse(chatVm.uiState.value.isGenerating)
+
+        // /clear resets conversation to "new" and clears steps
+        chatVm.sendMessage("/clear")
+        assertEquals("new", chatVm.uiState.value.conversationId)
+        assertTrue(chatVm.uiState.value.steps.isEmpty())
     }
 }
 

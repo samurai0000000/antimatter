@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -105,7 +106,15 @@ fun AimonNavigation(
     val isQuotasTabVisible = !isScanningQR &&
         !savedUrl.isNullOrEmpty() &&
         filesUiState.viewedFilePath == null &&
-        currentTab == 1
+        (currentTab == 1 || currentTab == 4)
+
+    LaunchedEffect(currentTab) {
+        AimonAppPreferences.currentTab = currentTab
+    }
+
+    LaunchedEffect(chatUiState.conversationId) {
+        AimonAppPreferences.activeConversationId = chatUiState.conversationId
+    }
 
     LaunchedEffect(updateState) {
         if (updateState is UpdateState.Downloading) {
@@ -124,13 +133,24 @@ fun AimonNavigation(
     }
 
     LaunchedEffect(Unit) {
+        AimonAppPreferences.init(context)
         aimonViewModel.initPreferences(context)
         if (LocalCrashHandler.hasUnsentLogs(context)) {
             showCrashDialog = true
         }
     }
 
-    LaunchedEffect(intent) {
+    val openConversationExtra = intent?.getStringExtra(AimonNotificationManager.EXTRA_OPEN_CONVERSATION_ID)
+    LaunchedEffect(intent, openConversationExtra) {
+        if (!openConversationExtra.isNullOrBlank()) {
+            currentTab = 0
+            if (openConversationExtra == "new") {
+                chatViewModel.startNewConversation()
+            } else {
+                chatViewModel.subscribeConversation(openConversationExtra)
+            }
+            intent?.removeExtra(AimonNotificationManager.EXTRA_OPEN_CONVERSATION_ID)
+        }
         intent?.data?.let { uri ->
             val isAimonPair = (uri.scheme == "aimon" && uri.host == "pair") ||
                               (uri.scheme == "aimon" && uri.path == "/pair")
@@ -426,6 +446,20 @@ fun AimonNavigation(
                                 indicatorColor = indicatorColor
                             )
                         )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
+                            label = { Text("Settings") },
+                            selected = currentTab == 4,
+                            onClick = { currentTab = 4 },
+                            alwaysShowLabel = false,
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFFA855F7),
+                                selectedTextColor = Color(0xFFA855F7),
+                                unselectedIconColor = unselectedColor,
+                                unselectedTextColor = unselectedColor,
+                                indicatorColor = indicatorColor
+                            )
+                        )
                     }
                 }
             ) { paddingValues ->
@@ -453,7 +487,8 @@ fun AimonNavigation(
                                 onSwitchAgent = { id -> chatViewModel.switchAgent(id) },
                                 onSearchHistory = { query -> chatViewModel.updateSearchQuery(query) },
                                 onSelectImage = { uri -> chatViewModel.selectImage(uri) },
-                                onStepVisible = { index -> chatViewModel.onStepVisible(index) }
+                                onStepVisible = { index -> chatViewModel.onStepVisible(index) },
+                                onOpenSettings = { currentTab = 4 }
                             )
                         }
                         1 -> {
@@ -479,6 +514,20 @@ fun AimonNavigation(
                                         if (success) {
                                             filesViewModel.changeWorkspace(path)
                                         }
+                                    }
+                                }
+                            )
+                        }
+                        4 -> {
+                            SettingsScreen(
+                                savedUrl = savedUrl,
+                                activeConversationId = chatUiState.conversationId,
+                                updateController = updateController,
+                                onScanQRClick = { isScanningQR = true },
+                                onDisconnectClick = { connectionViewModel.disconnectManually() },
+                                onDefaultModelChanged = { modelId ->
+                                    if (chatUiState.conversationId.isNullOrBlank() || chatUiState.conversationId == "new") {
+                                        chatViewModel.selectModel(modelId)
                                     }
                                 }
                             )

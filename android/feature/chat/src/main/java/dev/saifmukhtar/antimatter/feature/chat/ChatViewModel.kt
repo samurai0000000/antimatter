@@ -45,6 +45,22 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import dev.saifmukhtar.antimatter.core.data.AppDao
 
+data class ModelOption(
+    val id: String,
+    val label: String,
+    val subtitle: String
+)
+
+val AVAILABLE_MODEL_OPTIONS = listOf(
+    ModelOption("default", "Auto (Server Default)", "Uses active session or default server model"),
+    ModelOption("gemini-4-argon-high", "Gemini 4 Argon (High)", "Highest reasoning capability"),
+    ModelOption("gemini-4-argon-medium", "Gemini 4 Argon (Medium)", "Balanced reasoning & speed"),
+    ModelOption("gemini-3.8-flash", "Gemini 3.8 Flash", "Fastest low-latency responses"),
+    ModelOption("claude-opus-5-5-high", "Claude Opus 5.5 (High)", "Deep coding & architectural reasoning"),
+    ModelOption("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)", "Fast coding & verification"),
+    ModelOption("gpt-oss-120b", "GPT-OSS 120B", "Open-weights 120B model")
+)
+
 data class ChatUiState(
     val connectionState: BridgeWebSocket.ConnectionState = BridgeWebSocket.ConnectionState.DISCONNECTED,
     val isGenerating: Boolean = false,
@@ -67,6 +83,8 @@ data class ChatUiState(
     val availableWorkspaces: List<String> = emptyList(),
     val showConversationPickerSheet: Boolean = false,
     val showPromptsSheet: Boolean = false,
+    val showModelPickerDialog: Boolean = false,
+    val pendingOpenSettingsTab: Boolean = false,
     val isInChatSearchActive: Boolean = false,
     val inChatSearchQuery: String = "",
     val inChatMatches: List<Int> = emptyList(),
@@ -1067,6 +1085,48 @@ class ChatViewModel @Inject constructor(
         _uiState.update { it.copy(selectedImageUri = uri) }
     }
 
+    fun setShowModelPickerDialog(show: Boolean) {
+        _uiState.update { it.copy(showModelPickerDialog = show) }
+    }
+
+    fun consumeOpenSettingsTab() {
+        _uiState.update { it.copy(pendingOpenSettingsTab = false) }
+    }
+
+    private fun getDefaultConfiguredModelId(): String {
+        val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE) ?: return "default"
+        return prefs.getString("default_model_id", "default")?.takeIf { it.isNotBlank() } ?: "default"
+    }
+
+    fun selectModelOption(modelId: String, appendConfirmationStep: Boolean = true) {
+        val normalized = modelId.trim().ifBlank { "default" }
+        val option = AVAILABLE_MODEL_OPTIONS.find {
+            it.id.equals(normalized, ignoreCase = true) ||
+                it.label.equals(normalized, ignoreCase = true)
+        }
+        val finalId = option?.id ?: normalized
+        val finalLabel = option?.label ?: normalized
+        _uiState.update { state ->
+            val updatedSteps = state.steps.toMutableList()
+            if (appendConfirmationStep) {
+                updatedSteps.add(
+                    TrajectoryStep(
+                        case = "text",
+                        value = "**Active model set to:** `$finalLabel` (`$finalId`)",
+                        stepIndex = -1
+                    )
+                )
+            }
+            state.copy(
+                selectedModel = finalId,
+                conversationModel = if (finalId == "default") "" else finalId,
+                showModelPickerDialog = false,
+                steps = updatedSteps,
+                isGenerating = false
+            )
+        }
+    }
+
     fun sendPrompt(text: String) {
         sendMessage(text)
     }
@@ -1083,9 +1143,42 @@ class ChatViewModel @Inject constructor(
         if (text.isBlank() && _uiState.value.selectedImageUri == null) return
         
         val imageUri = _uiState.value.selectedImageUri
+        val trimmedInput = text.trim()
+
+        // Intercept client-side slash commands when no image is attached
+        if (imageUri == null && trimmedInput.startsWith("/")) {
+            val spaceIdx = trimmedInput.indexOf(' ')
+            val cmdLower = (if (spaceIdx >= 0) trimmedInput.substring(0, spaceIdx) else trimmedInput).lowercase()
+            val cmdArg = if (spaceIdx >= 0) trimmedInput.substring(spaceIdx + 1).trim() else ""
+
+            if (cmdLower == "/clear" || cmdLower == "/new" || cmdLower == "/reset") {
+                startNewConversation()
+                return
+            }
+            if (cmdLower == "/settings" || cmdLower == "/config") {
+                _uiState.update { it.copy(pendingOpenSettingsTab = true) }
+                return
+            }
+            if (cmdLower == "/model") {
+                if (cmdArg.isBlank()) {
+                    setShowModelPickerDialog(true)
+                } else {
+                    _uiState.update { state ->
+                        val newSteps = state.steps.toMutableList()
+                        newSteps.add(TrajectoryStep(case = "userInput", value = trimmedInput, stepIndex = -1))
+                        state.copy(steps = newSteps)
+                    }
+                    selectModelOption(cmdArg, appendConfirmationStep = true)
+                }
+                return
+            }
+        }
+
         val textToSend = text.ifBlank { "Attached an image." }
         val targetConversationId = _uiState.value.conversationId ?: "new"
-        val modelToSend = _uiState.value.selectedModel.ifBlank { "default" }
+        val configuredDefault = getDefaultConfiguredModelId()
+        val modelToSend = _uiState.value.selectedModel.takeIf { it.isNotBlank() && it != "default" }
+            ?: configuredDefault
         val sourceToSend = richSummaryMap[targetConversationId]?.source ?: ""
         
         // Optimistically add user step
@@ -1164,18 +1257,20 @@ class ChatViewModel @Inject constructor(
         lastStepIndex = -1
         pendingFullRefresh = false
         pendingFocusIsTranscriptStepIndex = false
+        val defaultModel = getDefaultConfiguredModelId()
         _uiState.update {
             it.copy(
                 steps = emptyList(),
                 conversationId = "new",
                 isGenerating = false,
                 error = null,
-                selectedModel = "default",
-                conversationModel = "",
+                selectedModel = defaultModel,
+                conversationModel = if (defaultModel == "default") "" else defaultModel,
                 focusedOriginalStepIndex = null,
                 pendingFocusStepIndex = null,
                 showConversationPickerSheet = false,
-                showPromptsSheet = false
+                showPromptsSheet = false,
+                showModelPickerDialog = false
             )
         }
         val agentId = _uiState.value.activeAgentId ?: "antigravity"
@@ -1326,7 +1421,7 @@ class ChatViewModel @Inject constructor(
     }
     
     fun changeModel() {
-        webSocket.sendMessage(OutboundMessage.ChangeModel(agentId = _uiState.value.activeAgentId))
+        setShowModelPickerDialog(true)
     }
     
     
