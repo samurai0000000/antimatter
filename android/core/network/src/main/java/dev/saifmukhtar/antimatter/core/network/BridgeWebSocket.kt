@@ -447,6 +447,15 @@ class BridgeWebSocket(private val context: Context) {
                             if (message.source.isNotBlank()) {
                                 payloadMap["source"] = message.source
                             }
+                            if (!message.questionResponses.isNullOrEmpty()) {
+                                payloadMap["questionResponses"] = message.questionResponses.map { r ->
+                                    mapOf(
+                                        "question" to r.question,
+                                        "selectedOptions" to r.selectedOptions,
+                                        "writeInResponse" to r.writeInResponse
+                                    )
+                                }
+                            }
                             val reqBody = gson.toJson(payloadMap)
                             val req = Request.Builder()
                                 .url("$url/api/agent/prompt")
@@ -468,15 +477,48 @@ class BridgeWebSocket(private val context: Context) {
                                     val json = JsonParser.parseString(body).asJsonObject
                                     val cid = json.get("conversationId")?.takeIf { !it.isJsonNull }?.asString ?: ""
                                     val status = json.get("status")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                    val respSource = optJsonString(json, "source") ?: ""
+                                    val respModel = optJsonString(json, "model") ?: ""
                                     if (status == "cleared") {
                                         _messages.emit(InboundMessage.SessionState(
                                             conversationId = "new",
                                             stepCount = 0,
                                             model = "default",
-                                            agentId = message.agentId ?: "antigravity"
+                                            agentId = message.agentId ?: "antigravity",
+                                            source = respSource
                                         ))
                                         _messages.emit(InboundMessage.ResponseComplete(
                                             conversationId = "new",
+                                            agentId = message.agentId ?: "antigravity"
+                                        ))
+                                    } else if (status == "compacted") {
+                                        val parsedSteps = parseTranscriptStepsFromJson(json, message.agentId ?: "antigravity")
+                                        val resolvedCompactedCid = cid.ifBlank { reqCid }
+                                        _messages.emit(InboundMessage.SessionState(
+                                            conversationId = resolvedCompactedCid,
+                                            stepCount = parsedSteps.size,
+                                            model = respModel.ifBlank { message.model },
+                                            agentId = message.agentId ?: "antigravity",
+                                            source = respSource
+                                        ))
+                                        if (parsedSteps.isNotEmpty()) {
+                                            _messages.emit(InboundMessage.StepBatch(
+                                                steps = parsedSteps,
+                                                agentId = message.agentId ?: "antigravity",
+                                                conversationId = resolvedCompactedCid.ifBlank { null }
+                                            ))
+                                        } else if (json.has("response") && json.get("response").isJsonPrimitive) {
+                                            val respText = json.get("response").asString
+                                            if (respText.isNotBlank()) {
+                                                _messages.emit(InboundMessage.Step(
+                                                    step = TrajectoryStep(case = "text", value = respText),
+                                                    index = -1,
+                                                    agentId = message.agentId ?: "antigravity"
+                                                ))
+                                            }
+                                        }
+                                        _messages.emit(InboundMessage.ResponseComplete(
+                                            conversationId = resolvedCompactedCid,
                                             agentId = message.agentId ?: "antigravity"
                                         ))
                                     } else if (status == "command_response" && json.has("response") && json.get("response").isJsonPrimitive) {
@@ -510,6 +552,8 @@ class BridgeWebSocket(private val context: Context) {
                                                 index = -1,
                                                 agentId = message.agentId ?: "antigravity"
                                             ))
+                                            _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                        } else if (status == "dispatched") {
                                             _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
                                         }
                                     }
@@ -594,6 +638,7 @@ class BridgeWebSocket(private val context: Context) {
                                 } else {
                                     0
                                 }
+                                val source = optJsonString(json, "source") ?: ""
                                 val steps = parseTranscriptStepsFromJson(json, message.agentId)
 
                                 if (message.lastKnownStepCount == 0 && (message.sinceStepIndex == null || message.sinceStepIndex < 0)) {
@@ -601,7 +646,8 @@ class BridgeWebSocket(private val context: Context) {
                                         conversationId = cid,
                                         model = model,
                                         stepCount = stepCount,
-                                        agentId = message.agentId
+                                        agentId = message.agentId,
+                                        source = source
                                     ))
                                 }
                                 if (steps.isNotEmpty() || message.sinceStepIndex == null || message.sinceStepIndex < 0) {
@@ -993,6 +1039,86 @@ class BridgeWebSocket(private val context: Context) {
         }
     }
 
+    private fun parseQuestionsArrayFromJsonElement(
+        rawQuestionsElem: com.google.gson.JsonElement?,
+        fallbackAnswers: List<String> = emptyList()
+    ): List<AskQuestionPrompt> {
+        if (rawQuestionsElem == null || rawQuestionsElem.isJsonNull) return emptyList()
+        val qArr: com.google.gson.JsonArray = when {
+            rawQuestionsElem.isJsonArray -> rawQuestionsElem.asJsonArray
+            rawQuestionsElem.isJsonPrimitive && rawQuestionsElem.asJsonPrimitive.isString -> {
+                try {
+                    val parsed = JsonParser.parseString(rawQuestionsElem.asString)
+                    if (parsed.isJsonArray) parsed.asJsonArray else return emptyList()
+                } catch (_: Exception) {
+                    return emptyList()
+                }
+            }
+            else -> return emptyList()
+        }
+        val result = mutableListOf<AskQuestionPrompt>()
+        for ((qIdx, qElem) in qArr.withIndex()) {
+            if (!qElem.isJsonObject) continue
+            val qObj = qElem.asJsonObject
+            val qText = optJsonString(qObj, "question")?.trim()
+                ?: optJsonString(qObj, "prompt")?.trim()
+                ?: optJsonString(qObj, "text")?.trim()
+                ?: ""
+            if (qText.isEmpty()) continue
+            val isMulti = optJsonBool(
+                qObj,
+                "is_multi_select",
+                optJsonBool(qObj, "isMultiSelect", false)
+            )
+            val optionsList = mutableListOf<String>()
+            if (qObj.has("options") && qObj.get("options").isJsonArray) {
+                for (optElem in qObj.getAsJsonArray("options")) {
+                    when {
+                        optElem.isJsonPrimitive -> {
+                            val s = optElem.asString.trim()
+                            if (s.isNotEmpty()) optionsList.add(s)
+                        }
+                        optElem.isJsonObject -> {
+                            val oObj = optElem.asJsonObject
+                            val s = (optJsonString(oObj, "label")
+                                ?: optJsonString(oObj, "text")
+                                ?: optJsonString(oObj, "value")
+                                ?: "").trim()
+                            if (s.isNotEmpty()) optionsList.add(s)
+                        }
+                    }
+                }
+            }
+            val selectedList = mutableListOf<String>()
+            val selArr = when {
+                qObj.has("selected_answers") && qObj.get("selected_answers").isJsonArray ->
+                    qObj.getAsJsonArray("selected_answers")
+                qObj.has("selectedAnswers") && qObj.get("selectedAnswers").isJsonArray ->
+                    qObj.getAsJsonArray("selectedAnswers")
+                else -> null
+            }
+            if (selArr != null) {
+                for (sElem in selArr) {
+                    if (sElem.isJsonPrimitive) {
+                        val s = sElem.asString.trim()
+                        if (s.isNotEmpty()) selectedList.add(s)
+                    }
+                }
+            } else if (qIdx < fallbackAnswers.size && fallbackAnswers[qIdx].isNotBlank()) {
+                selectedList.add(fallbackAnswers[qIdx])
+            }
+            result.add(
+                AskQuestionPrompt(
+                    question = qText,
+                    options = optionsList,
+                    isMultiSelect = isMulti,
+                    selectedAnswers = selectedList
+                )
+            )
+        }
+        return result
+    }
+
     private fun parseTranscriptStepsFromJson(
         json: com.google.gson.JsonObject,
         agentId: String?
@@ -1015,6 +1141,26 @@ class BridgeWebSocket(private val context: Context) {
                 null
             }
             val caseVal = optJsonString(stepObj, "case") ?: ""
+            val askObj = if (elemObj.has("askQuestion") && elemObj.get("askQuestion").isJsonObject) {
+                elemObj.getAsJsonObject("askQuestion")
+            } else {
+                null
+            }
+            val tcArr = if (elemObj.has("tool_calls") && elemObj.get("tool_calls").isJsonArray) {
+                elemObj.getAsJsonArray("tool_calls")
+            } else {
+                null
+            }
+            val askToolCallObj = tcArr?.firstOrNull { tcEl ->
+                if (!tcEl.isJsonObject) false else {
+                    val n = optJsonString(tcEl.asJsonObject, "name") ?: ""
+                    n == "ask_question" || n == "AskUserQuestion"
+                }
+            }?.asJsonObject
+            val hasAskQuestion = typeStr == "ASK_QUESTION" ||
+                caseVal == "askQuestion" ||
+                askObj != null ||
+                askToolCallObj != null
 
             if (typeStr == "USER_INPUT" || caseVal == "userInput") {
                 val valStr = optJsonString(elemObj, "text")
@@ -1034,6 +1180,7 @@ class BridgeWebSocket(private val context: Context) {
                     )
                 }
             } else if (
+                hasAskQuestion ||
                 typeStr == "PLANNER_RESPONSE" ||
                 typeStr == "TOOL_CALL" ||
                 elemObj.has("thinking") ||
@@ -1059,12 +1206,14 @@ class BridgeWebSocket(private val context: Context) {
                     )
                 }
 
-                if (elemObj.has("tool_calls") && elemObj.get("tool_calls").isJsonArray) {
-                    val tcArr = elemObj.getAsJsonArray("tool_calls")
+                if (tcArr != null) {
                     for (tcElem in tcArr) {
                         if (!tcElem.isJsonObject) continue
                         val tcObj = tcElem.asJsonObject
                         val name = optJsonString(tcObj, "name") ?: "tool"
+                        if (name == "ask_question" || name == "AskUserQuestion") {
+                            continue
+                        }
                         val tAction = optJsonString(tcObj, "toolAction")
                         val tSummary = optJsonString(tcObj, "toolSummary")
                         val cmd = optJsonString(tcObj, "command")
@@ -1090,7 +1239,7 @@ class BridgeWebSocket(private val context: Context) {
                             )
                         )
                     }
-                } else if (caseVal == "toolCall") {
+                } else if (caseVal == "toolCall" && !hasAskQuestion) {
                     val toolName = optJsonString(stepObj, "tool") ?: "tool"
                     val cmd = optJsonString(stepObj, "command")
                     val valStr = optJsonString(stepObj, "value")
@@ -1111,13 +1260,94 @@ class BridgeWebSocket(private val context: Context) {
 
                 val textStr = optJsonString(elemObj, "text")
                     ?: (if (caseVal == "text" || caseVal == "markdownChunk") optJsonString(stepObj, "value") else null)
-                if (!textStr.isNullOrBlank()) {
+                if (!textStr.isNullOrBlank() && typeStr != "ASK_QUESTION" && caseVal != "askQuestion") {
                     result.add(
                         InboundMessage.Step(
                             index = -1,
                             step = TrajectoryStep(
                                 case = "text",
                                 value = textStr,
+                                stepIndex = rawStepIdx
+                            ),
+                            agentId = agentId
+                        )
+                    )
+                }
+
+                if (hasAskQuestion) {
+                    val fallbackAnswers = mutableListOf<String>()
+                    if (askObj != null && askObj.has("answers") && askObj.get("answers").isJsonArray) {
+                        for (aEl in askObj.getAsJsonArray("answers")) {
+                            if (aEl.isJsonPrimitive) {
+                                val s = aEl.asString.trim()
+                                if (s.isNotEmpty()) fallbackAnswers.add(s)
+                            }
+                        }
+                    }
+                    var parsedQuestions = parseQuestionsArrayFromJsonElement(
+                        askObj?.get("questions") ?: stepObj?.get("questions"),
+                        fallbackAnswers
+                    )
+                    if (parsedQuestions.isEmpty() && askToolCallObj != null) {
+                        val rawArgsEl = askToolCallObj.get("arguments") ?: askToolCallObj.get("args")
+                        val argsJsonObj = when {
+                            rawArgsEl == null || rawArgsEl.isJsonNull -> null
+                            rawArgsEl.isJsonObject -> rawArgsEl.asJsonObject
+                            rawArgsEl.isJsonPrimitive && rawArgsEl.asJsonPrimitive.isString -> {
+                                try {
+                                    val p = JsonParser.parseString(rawArgsEl.asString)
+                                    if (p.isJsonObject) p.asJsonObject else null
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            }
+                            else -> null
+                        }
+                        if (argsJsonObj != null) {
+                            parsedQuestions = parseQuestionsArrayFromJsonElement(
+                                argsJsonObj.get("questions"),
+                                fallbackAnswers
+                            )
+                            if (parsedQuestions.isEmpty() && argsJsonObj.has("question")) {
+                                val singleArr = com.google.gson.JsonArray().apply { add(argsJsonObj) }
+                                parsedQuestions = parseQuestionsArrayFromJsonElement(singleArr, fallbackAnswers)
+                            }
+                        }
+                    }
+
+                    val isAnswered = when {
+                        askObj != null && askObj.has("answered") ->
+                            optJsonBool(askObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                        stepObj != null && stepObj.has("answered") ->
+                            optJsonBool(stepObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                        elemObj.has("answered") ->
+                            optJsonBool(elemObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                        else -> parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                    }
+
+                    val summaryText = if (parsedQuestions.isNotEmpty()) {
+                        parsedQuestions.joinToString("\n\n") { q ->
+                            buildString {
+                                append(q.question)
+                                q.options.forEachIndexed { idx, opt ->
+                                    append("\n${idx + 1}. $opt")
+                                }
+                            }
+                        }
+                    } else {
+                        optJsonString(elemObj, "text")?.takeIf { it.isNotBlank() }
+                            ?: optJsonString(stepObj, "value")?.takeIf { it.isNotBlank() }
+                            ?: "Agent Question"
+                    }
+
+                    result.add(
+                        InboundMessage.Step(
+                            index = -1,
+                            step = TrajectoryStep(
+                                case = "askQuestion",
+                                value = summaryText,
+                                questions = parsedQuestions,
+                                isQuestionAnswered = isAnswered,
                                 stepIndex = rawStepIdx
                             ),
                             agentId = agentId

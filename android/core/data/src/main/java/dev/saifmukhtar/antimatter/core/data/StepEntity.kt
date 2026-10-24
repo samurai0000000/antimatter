@@ -3,7 +3,14 @@ package dev.saifmukhtar.antimatter.core.data
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
+import com.google.gson.Gson
+import dev.saifmukhtar.antimatter.core.network.AskQuestionPrompt
 import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
+
+private data class PersistedAskQuestionMeta(
+    val questions: List<AskQuestionPrompt> = emptyList(),
+    val isQuestionAnswered: Boolean = false
+)
 
 @Entity(
     tableName = "steps",
@@ -28,6 +35,22 @@ data class StepEntity(
 ) {
     fun toTrajectoryStep(): TrajectoryStep {
         val decompressedValue = compressedValue?.let { GzipUtils.decompress(it) }
+        if (type == "askQuestion" && !command.isNullOrBlank() && command.trimStart().startsWith("{")) {
+            try {
+                val meta = Gson().fromJson(command, PersistedAskQuestionMeta::class.java)
+                if (meta != null) {
+                    return TrajectoryStep(
+                        case = type,
+                        value = decompressedValue,
+                        tool = tool,
+                        command = null,
+                        questions = meta.questions ?: emptyList(),
+                        isQuestionAnswered = meta.isQuestionAnswered
+                    )
+                }
+            } catch (_: Exception) {
+            }
+        }
         return TrajectoryStep(
             case = type,
             value = decompressedValue,
@@ -68,12 +91,21 @@ data class StepEntity(
 
 fun TrajectoryStep.toEntity(conversationId: String, index: Int): StepEntity {
     val compressed = this.value?.let { GzipUtils.compress(it) }
+    val encodedCommand = if (this.case == "askQuestion" && (this.questions.isNotEmpty() || this.isQuestionAnswered)) {
+        try {
+            Gson().toJson(PersistedAskQuestionMeta(this.questions, this.isQuestionAnswered))
+        } catch (_: Exception) {
+            this.command
+        }
+    } else {
+        this.command
+    }
     return StepEntity(
         conversationId = conversationId,
         stepIndex = index,
         type = this.case,
         compressedValue = compressed,
         tool = this.tool,
-        command = this.command
+        command = encodedCommand
     )
 }

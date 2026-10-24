@@ -36,6 +36,19 @@ enum class StepCase(val raw: String) {
     }
 }
 
+data class AskQuestionPrompt(
+    @SerializedName("question") val question: String = "",
+    @SerializedName("options") val options: List<String> = emptyList(),
+    @SerializedName("isMultiSelect") val isMultiSelect: Boolean = false,
+    @SerializedName("selectedAnswers") val selectedAnswers: List<String> = emptyList()
+)
+
+data class QuestionResponsePayload(
+    @SerializedName("question") val question: String = "",
+    @SerializedName("selectedOptions") val selectedOptions: List<String> = emptyList(),
+    @SerializedName("writeInResponse") val writeInResponse: String = ""
+)
+
 /** A single step in the AI conversation trajectory */
 data class TrajectoryStep(
     @SerializedName("case") val case: String = "unknown",
@@ -45,7 +58,9 @@ data class TrajectoryStep(
     @SerializedName("toolAction") val toolAction: String? = null,
     @SerializedName("toolSummary") val toolSummary: String? = null,
     @SerializedName("thinking") val thinking: String? = null,
-    @SerializedName("stepIndex") val stepIndex: Int = -1
+    @SerializedName("stepIndex") val stepIndex: Int = -1,
+    @SerializedName("questions") val questions: List<AskQuestionPrompt> = emptyList(),
+    @SerializedName("isQuestionAnswered") val isQuestionAnswered: Boolean = false
 ) {
     val stepCase: StepCase get() = StepCase.from(case)
     val toolName: String? get() = tool
@@ -78,7 +93,8 @@ sealed class InboundMessage {
         val stepCount: Int = 0,
         val cloudflareUrl: String? = null,
         val environment: String? = null,
-        val agentId: String? = null
+        val agentId: String? = null,
+        val source: String = ""
     ) : InboundMessage()
 
     data class Step(
@@ -152,6 +168,7 @@ sealed class OutboundMessage {
         val model: String = "default",
         val source: String = "",
         val autoApprove: Boolean = true,
+        val questionResponses: List<QuestionResponsePayload>? = null,
         val type: String = "SEND_MESSAGE",
         override val id: String? = null,
         override val agentId: String? = null

@@ -22,13 +22,19 @@ import com.sun.net.httpserver.HttpHandler
 import com.sun.net.httpserver.HttpServer
 import dev.saifmukhtar.antimatter.core.data.AppDao
 import dev.saifmukhtar.antimatter.core.data.UserPreferencesRepository
+import dev.saifmukhtar.antimatter.core.data.toEntity
+import dev.saifmukhtar.antimatter.core.network.AskQuestionPrompt
 import dev.saifmukhtar.antimatter.core.network.BridgeWebSocket
+import dev.saifmukhtar.antimatter.core.network.QuestionResponsePayload
 import dev.saifmukhtar.antimatter.core.network.StepCase
 import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
 import dev.saifmukhtar.antimatter.feature.chat.ChatItem
 import dev.saifmukhtar.antimatter.feature.chat.ChatViewModel
+import dev.saifmukhtar.antimatter.feature.chat.computeMaxPromptInputHeightDp
 import dev.saifmukhtar.antimatter.feature.chat.groupSteps
+import dev.saifmukhtar.antimatter.feature.chat.placeholderForProvider
 import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalog
+import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalogForProvider
 import dev.saifmukhtar.antimatter.feature.files.FilesViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -1248,6 +1254,357 @@ class AimonCompanionFullGuiFlowTest {
         chatVm.sendMessage("/provider")
         assertTrue(chatVm.uiState.value.showProviderPickerDialog)
         chatVm.setShowProviderPickerDialog(false)
+    }
+
+    @Test
+    fun testDynamicPromptInputHeightPlaceholderAndProviderSlashCatalog() {
+        // 1. Dynamic prompt input box max height calculation
+        // Normal portrait screen (800dp) with keyboard closed (0dp): caps at 168dp (~6 lines)
+        assertEquals(168, computeMaxPromptInputHeightDp(screenHeightDp = 800, imeBottomDp = 0))
+        // Normal portrait screen (800dp) with soft keyboard open (340dp): (800 - 340 - 80) * 0.4 = 152dp
+        assertEquals(152, computeMaxPromptInputHeightDp(screenHeightDp = 800, imeBottomDp = 340))
+        // Compact screen or landscape (640dp) with tall keyboard (400dp): clamped to 88dp minimum cap
+        assertEquals(88, computeMaxPromptInputHeightDp(screenHeightDp = 640, imeBottomDp = 400))
+
+        // 2. Provider-specific placeholder text
+        assertEquals("Ask Google Antigravity or type /...", placeholderForProvider("antigravity"))
+        assertEquals("Ask Google Antigravity or type /...", placeholderForProvider("cli"))
+        assertEquals("Ask Antigravity IDE or type /...", placeholderForProvider("ide"))
+        assertEquals("Ask Claude Code or type /...", placeholderForProvider("claude"))
+        assertEquals("Ask Cursor Agent or type /...", placeholderForProvider("cursor"))
+
+        // 3. Provider-specific slash command catalogs
+        val agyCatalog = slashCommandCatalogForProvider("antigravity").associateBy { it.command }
+        assertTrue(agyCatalog.containsKey("/grill-me"))
+        assertTrue(agyCatalog.containsKey("/goal"))
+        assertTrue(agyCatalog.containsKey("/usage"))
+
+        val ideCatalog = slashCommandCatalogForProvider("ide").associateBy { it.command }
+        assertEquals(agyCatalog.keys, ideCatalog.keys)
+
+        val claudeCatalog = slashCommandCatalogForProvider("claude").associateBy { it.command }
+        assertTrue(claudeCatalog.containsKey("/compact"))
+        assertTrue(claudeCatalog.containsKey("/clear"))
+        assertTrue(claudeCatalog.containsKey("/new"))
+        assertTrue(claudeCatalog.containsKey("/effort"))
+        assertTrue(claudeCatalog.containsKey("/doctor"))
+        assertTrue(claudeCatalog.containsKey("/status"))
+        assertTrue(claudeCatalog.containsKey("/plan"))
+        assertFalse("Claude catalog should not include Antigravity-only /grill-me", claudeCatalog.containsKey("/grill-me"))
+
+        val cursorCatalog = slashCommandCatalogForProvider("cursor").associateBy { it.command }
+        assertTrue(cursorCatalog.containsKey("/compact"))
+        assertTrue(cursorCatalog.containsKey("/summarize"))
+        assertTrue(cursorCatalog.containsKey("/clear"))
+        assertTrue(cursorCatalog.containsKey("/new"))
+        assertTrue(cursorCatalog.containsKey("/models"))
+        assertEquals("/model ", cursorCatalog["/models"]!!.insertText)
+        assertTrue(cursorCatalog.containsKey("/ask"))
+        assertEquals("/ask ", cursorCatalog["/ask"]!!.insertText)
+        assertTrue(cursorCatalog.containsKey("/plan"))
+        assertTrue(cursorCatalog.containsKey("/status"))
+        assertFalse("Cursor catalog should not include Antigravity-only /grill-me", cursorCatalog.containsKey("/grill-me"))
+    }
+
+    @Test
+    fun testProviderClearPreservationAndCompactionInPlaceAndRollover() = runBlocking {
+        val mockUserPrefs = mock(UserPreferencesRepository::class.java)
+        val mockDao = mock(AppDao::class.java)
+        `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+
+        var compactMode = "in_place"
+        var claudeCompactedInPlace = false
+        registerRoute("/api/agent/transcript", requireToken = "tok-live-verified-001") { rec ->
+            val q = rec.query ?: ""
+            when {
+                q.contains("id=conv-claude-01") && claudeCompactedInPlace -> """
+                    {
+                      "conversationId": "conv-claude-01",
+                      "source": "claude",
+                      "model": "claude-sonnet-4-6",
+                      "stepCount": 2,
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "/compact"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "📦 **Context Compacted**\n\nIn-place Claude summary."}
+                      ]
+                    }
+                """.trimIndent()
+                q.contains("id=conv-claude-01") -> """
+                    {
+                      "conversationId": "conv-claude-01",
+                      "source": "claude",
+                      "model": "claude-sonnet-4-6",
+                      "stepCount": 4,
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "Turn 1 user"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Turn 1 reply"},
+                        {"stepIndex": 2, "type": "USER_INPUT", "text": "Turn 2 user"},
+                        {"stepIndex": 3, "type": "PLANNER_RESPONSE", "text": "Turn 2 reply"}
+                      ]
+                    }
+                """.trimIndent()
+                q.contains("id=conv-cursor-02-compacted") -> """
+                    {
+                      "conversationId": "conv-cursor-02-compacted",
+                      "source": "cursor",
+                      "model": "sonnet-4.6",
+                      "stepCount": 2,
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "/compact"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Compacted Cursor session checkpoint."}
+                      ]
+                    }
+                """.trimIndent()
+                else -> """
+                    {
+                      "conversationId": "conv-cursor-02",
+                      "source": "cursor",
+                      "model": "sonnet-4.6",
+                      "stepCount": 2,
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "Initial Cursor prompt"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Initial Cursor reply"}
+                      ]
+                    }
+                """.trimIndent()
+            }
+        }
+
+        registerRoute("/api/agent/prompt", requireToken = "tok-live-verified-001") { rec ->
+            val json = JsonParser.parseString(rec.body).asJsonObject
+            val prompt = json.get("prompt")?.asString ?: ""
+            val cid = json.get("conversationId")?.asString ?: ""
+            if (prompt.startsWith("/compact")) {
+                if (compactMode == "in_place") {
+                    claudeCompactedInPlace = true
+                    """
+                    {
+                      "status": "compacted",
+                      "compactedFrom": "$cid",
+                      "agentId": "claude",
+                      "source": "claude",
+                      "conversationId": "$cid",
+                      "command": "/compact",
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "/compact"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "📦 **Context Compacted**\n\nIn-place Claude summary."}
+                      ],
+                      "response": "In-place Claude summary."
+                    }
+                    """.trimIndent()
+                } else {
+                    """
+                    {
+                      "status": "compacted",
+                      "compactedFrom": "$cid",
+                      "agentId": "cursor",
+                      "source": "cursor",
+                      "conversationId": "conv-cursor-02-compacted",
+                      "command": "/compact",
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "/compact"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Compacted Cursor session checkpoint."}
+                      ],
+                      "response": "Compacted Cursor session checkpoint."
+                    }
+                    """.trimIndent()
+                }
+            } else {
+                """{"status":"completed","conversationId":"$cid","response":"ok"}"""
+            }
+        }
+
+        val bridgeWebSocket = BridgeWebSocket(mockApplication)
+        val chatVm = ChatViewModel(mockApplication, bridgeWebSocket, mockUserPrefs, mockDao)
+        chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
+
+        // 1. Subscribe to Claude session (source = "claude" from /api/agent/transcript)
+        chatVm.selectConversation("conv-claude-01")
+        waitUntil {
+            chatVm.uiState.value.conversationId == "conv-claude-01" &&
+                chatVm.uiState.value.steps.size == 4 &&
+                chatVm.uiState.value.activeSessionSource == "claude"
+        }
+        assertEquals("claude", chatVm.resolveEffectiveProvider())
+        assertEquals("claude", chatVm.uiState.value.activeProvider)
+
+        // 2. In-place /compact on Claude session replaces 4 steps with 2 compacted steps on same conversationId
+        compactMode = "in_place"
+        chatVm.sendMessage("/compact")
+        waitUntil {
+            !chatVm.uiState.value.isGenerating &&
+                chatVm.uiState.value.steps.any { it.value?.contains("In-place Claude summary") == true }
+        }
+        assertEquals("conv-claude-01", chatVm.uiState.value.conversationId)
+        assertEquals(2, chatVm.uiState.value.steps.size)
+        assertEquals("claude", chatVm.resolveEffectiveProvider())
+
+        // 3. /clear on Claude session preserves "claude" provider instead of resetting to default "antigravity"
+        chatVm.sendMessage("/clear")
+        assertEquals("new", chatVm.uiState.value.conversationId)
+        assertTrue(chatVm.uiState.value.steps.isEmpty())
+        assertEquals("claude", chatVm.uiState.value.activeProvider)
+        assertEquals("claude", chatVm.resolveEffectiveProvider())
+
+        // 4. Subscribe to Cursor session and run rollover /compact -> switches conversationId to conv-cursor-02-compacted
+        chatVm.selectConversation("conv-cursor-02")
+        waitUntil {
+            chatVm.uiState.value.conversationId == "conv-cursor-02" &&
+                chatVm.uiState.value.steps.size == 2 &&
+                chatVm.uiState.value.activeSessionSource == "cursor"
+        }
+        assertEquals("cursor", chatVm.resolveEffectiveProvider())
+
+        compactMode = "rollover"
+        chatVm.sendMessage("/compact focus on auth")
+        waitUntil {
+            chatVm.uiState.value.conversationId == "conv-cursor-02-compacted" &&
+                !chatVm.uiState.value.isGenerating &&
+                chatVm.uiState.value.steps.any { it.value?.contains("Compacted Cursor session checkpoint") == true }
+        }
+        assertEquals("cursor", chatVm.resolveEffectiveProvider())
+
+        // /new on Cursor session preserves "cursor" provider
+        chatVm.sendMessage("/new")
+        assertEquals("new", chatVm.uiState.value.conversationId)
+        assertEquals("cursor", chatVm.uiState.value.activeProvider)
+    }
+
+    @Test
+    fun testAskQuestionStepGroupingTranscriptParsingAndAnswerSubmission() = runBlocking {
+        // 1. Verify groupSteps promotes StepCase.ASK_QUESTION to a top-level SingleStep and closes preceding ThoughtGroup
+        val userStep = TrajectoryStep(case = "userInput", value = "/grill-me on database choice", stepIndex = 0)
+        val thinkingStep = TrajectoryStep(case = "plannerResponse", thinking = "Formulating design questions", stepIndex = 1)
+        val askStep = TrajectoryStep(
+            case = "askQuestion",
+            value = "Which database engine should we use?\n1. (Recommended) SQLite\n2. PostgreSQL",
+            stepIndex = 1,
+            questions = listOf(
+                AskQuestionPrompt(
+                    question = "Which database engine should we use?",
+                    options = listOf("(Recommended) SQLite", "PostgreSQL"),
+                    isMultiSelect = false
+                )
+            ),
+            isQuestionAnswered = false
+        )
+        val grouped = groupSteps(listOf(userStep, thinkingStep, askStep))
+        assertEquals(3, grouped.size)
+        assertTrue(grouped[0] is ChatItem.SingleStep)
+        assertTrue("Thinking step must be in ThoughtGroup", grouped[1] is ChatItem.ThoughtGroup)
+        assertTrue("ThoughtGroup before ASK_QUESTION must be marked completed", (grouped[1] as ChatItem.ThoughtGroup).isCompleted)
+        assertTrue("ASK_QUESTION must be promoted to top-level SingleStep", grouped[2] is ChatItem.SingleStep)
+        assertEquals(StepCase.ASK_QUESTION, (grouped[2] as ChatItem.SingleStep).step.stepCase)
+
+        // 2. Verify StepEntity persistence preserves questions and isQuestionAnswered without schema changes
+        val entity = askStep.toEntity("conv-grill-01", 2)
+        val roundTrip = entity.toTrajectoryStep()
+        assertEquals(StepCase.ASK_QUESTION, roundTrip.stepCase)
+        assertEquals(1, roundTrip.questions.size)
+        assertEquals("Which database engine should we use?", roundTrip.questions[0].question)
+        assertEquals(listOf("(Recommended) SQLite", "PostgreSQL"), roundTrip.questions[0].options)
+        assertFalse(roundTrip.isQuestionAnswered)
+
+        // 3. Verify BridgeWebSocket + ChatViewModel parse stringified args.questions from transcript and submit questionResponses
+        registerRoute("/api/agent/transcript", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "conversationId": "conv-grill-01",
+              "source": "cli",
+              "model": "gemini-4-argon-high",
+              "stepCount": 2,
+              "steps": [
+                {
+                  "stepIndex": 0,
+                  "type": "USER_INPUT",
+                  "text": "/grill-me on storage"
+                },
+                {
+                  "stepIndex": 1,
+                  "type": "PLANNER_RESPONSE",
+                  "thinking": "Preparing architecture question",
+                  "text": "",
+                  "tool_calls": [
+                    {
+                      "name": "ask_question",
+                      "arguments": {
+                        "questions": "[{\"question\":\"Which storage backend?\",\"options\":[\"(Recommended) SQLite\",\"DuckDB\"],\"is_multi_select\":false}]"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+            """.trimIndent()
+        }
+
+        registerRoute("/api/agent/prompt", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "status": "dispatched",
+              "interactionHandled": true,
+              "agentId": "antigravity",
+              "conversationId": "conv-grill-01"
+            }
+            """.trimIndent()
+        }
+
+        val mockUserPrefs = mock(UserPreferencesRepository::class.java)
+        val mockDao = mock(AppDao::class.java)
+        `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+
+        val bridgeWebSocket = BridgeWebSocket(mockApplication)
+        val chatVm = ChatViewModel(mockApplication, bridgeWebSocket, mockUserPrefs, mockDao)
+        chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
+        chatVm.selectConversation("conv-grill-01")
+
+        waitUntil {
+            chatVm.uiState.value.steps.any { it.stepCase == StepCase.ASK_QUESTION }
+        }
+
+        val steps = chatVm.uiState.value.steps
+        assertFalse("ask_question must not be duplicated as a generic toolCall step", steps.any { it.stepCase == StepCase.TOOL_CALL && it.tool == "ask_question" })
+        val parsedAsk = steps.first { it.stepCase == StepCase.ASK_QUESTION }
+        assertEquals(1, parsedAsk.questions.size)
+        assertEquals("Which storage backend?", parsedAsk.questions[0].question)
+        assertEquals(listOf("(Recommended) SQLite", "DuckDB"), parsedAsk.questions[0].options)
+        assertFalse(parsedAsk.isQuestionAnswered)
+
+        // Submit interactive answer from AskQuestionCard
+        recordedRequests.removeIf { it.path == "/api/agent/prompt" }
+        chatVm.submitQuestionAnswers(
+            step = parsedAsk,
+            responses = listOf(
+                QuestionResponsePayload(
+                    question = "Which storage backend?",
+                    selectedOptions = listOf("(Recommended) SQLite"),
+                    writeInResponse = ""
+                )
+            )
+        )
+
+        waitUntil {
+            recordedRequests.any { it.path == "/api/agent/prompt" }
+        }
+
+        val updatedAsk = chatVm.uiState.value.steps.first { it.stepCase == StepCase.ASK_QUESTION }
+        assertTrue("Submitted question step must be marked answered", updatedAsk.isQuestionAnswered)
+        assertEquals(listOf("(Recommended) SQLite"), updatedAsk.questions[0].selectedAnswers)
+
+        val promptReq = recordedRequests.last { it.path == "/api/agent/prompt" }
+        val sentJson = JsonParser.parseString(promptReq.body).asJsonObject
+        assertEquals("conv-grill-01", sentJson.get("conversationId").asString)
+        assertEquals("(Recommended) SQLite", sentJson.get("text").asString)
+        assertTrue("questionResponses array must be sent in POST /api/agent/prompt", sentJson.has("questionResponses"))
+        val qRespArr = sentJson.getAsJsonArray("questionResponses")
+        assertEquals(1, qRespArr.size())
+        val firstResp = qRespArr[0].asJsonObject
+        assertEquals("Which storage backend?", firstResp.get("question").asString)
+        assertEquals("(Recommended) SQLite", firstResp.getAsJsonArray("selectedOptions")[0].asString)
     }
 }
 

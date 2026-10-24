@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import dev.saifmukhtar.antimatter.core.network.BridgeWebSocket
 import dev.saifmukhtar.antimatter.core.network.InboundMessage
 import dev.saifmukhtar.antimatter.core.network.OutboundMessage
+import dev.saifmukhtar.antimatter.core.network.QuestionResponsePayload
 import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
 import dev.saifmukhtar.antimatter.core.network.StepCase
 import dev.saifmukhtar.antimatter.core.data.GzipUtils
@@ -94,6 +95,7 @@ data class ChatUiState(
     val selectedModel: String = "default",
     val conversationModel: String = "",
     val activeProvider: String = "antigravity",
+    val activeSessionSource: String = "",
     val error: String? = null,
     val history: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
     val filteredHistory: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
@@ -714,6 +716,12 @@ class ChatViewModel @Inject constructor(
                 if (message.conversationId == "new") {
                     lastStepIndex = -1
                     pendingFullRefresh = false
+                    val preservedProv = when (message.source.trim().lowercase()) {
+                        "claude" -> "claude"
+                        "cursor" -> "cursor"
+                        "cli", "antigravity", "ide" -> "antigravity"
+                        else -> _uiState.value.activeProvider
+                    }
                     _uiState.update {
                         it.copy(
                             conversationId = "new",
@@ -722,6 +730,8 @@ class ChatViewModel @Inject constructor(
                             currentModel = message.model.ifBlank { it.currentModel },
                             selectedModel = "default",
                             conversationModel = "",
+                            activeProvider = preservedProv,
+                            activeSessionSource = message.source.ifBlank { it.activeSessionSource },
                             focusedOriginalStepIndex = null,
                             pendingFocusStepIndex = null
                         )
@@ -729,15 +739,27 @@ class ChatViewModel @Inject constructor(
                     return
                 }
 
+                lastStepIndex = -1
                 pendingFullRefresh = true
                 val richModel = message.conversationId?.let { richSummaryMap[it]?.model } ?: ""
                 val resolvedConvModel = richModel.ifBlank { message.model }
+                val resolvedSource = message.source.ifBlank {
+                    message.conversationId?.let { richSummaryMap[it]?.source } ?: ""
+                }
+                val updatedProvider = when (resolvedSource.trim().lowercase()) {
+                    "claude" -> "claude"
+                    "cursor" -> "cursor"
+                    "cli", "antigravity", "ide", "live" -> "antigravity"
+                    else -> null
+                }
                 _uiState.update {
                     it.copy(
                         conversationId = message.conversationId,
                         expectedStepCount = message.stepCount,
                         currentModel = message.model.ifBlank { it.currentModel },
                         conversationModel = resolvedConvModel.ifBlank { it.conversationModel },
+                        activeSessionSource = resolvedSource.ifBlank { it.activeSessionSource },
+                        activeProvider = updatedProvider ?: it.activeProvider,
                         cloudflareUrl = message.cloudflareUrl,
                         environment = message.environment
                     )
@@ -853,7 +875,28 @@ class ChatViewModel @Inject constructor(
                                     it.stepIndex == stepIdx && it.stepCase == batchStep.step.stepCase
                                 }
                                 if (existingIdx >= 0) {
-                                    newSteps[existingIdx] = batchStep.step
+                                    val prevStep = newSteps[existingIdx]
+                                    val mergedStep = if (
+                                        prevStep.stepCase == StepCase.ASK_QUESTION &&
+                                        prevStep.isQuestionAnswered &&
+                                        !batchStep.step.isQuestionAnswered
+                                    ) {
+                                        val mergedQuestions = batchStep.step.questions.mapIndexed { qIdx, q ->
+                                            val prevQ = prevStep.questions.getOrNull(qIdx)
+                                            if (prevQ != null && prevQ.selectedAnswers.isNotEmpty() && q.selectedAnswers.isEmpty()) {
+                                                q.copy(selectedAnswers = prevQ.selectedAnswers)
+                                            } else {
+                                                q
+                                            }
+                                        }
+                                        batchStep.step.copy(
+                                            isQuestionAnswered = true,
+                                            questions = if (mergedQuestions.isNotEmpty()) mergedQuestions else prevStep.questions
+                                        )
+                                    } else {
+                                        batchStep.step
+                                    }
+                                    newSteps[existingIdx] = mergedStep
                                     return@forEach
                                 }
                             }
@@ -1150,6 +1193,22 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun resolveEffectiveProvider(conversationId: String? = _uiState.value.conversationId): String {
+        val rawSource = if (!conversationId.isNullOrBlank() && conversationId != "new") {
+            richSummaryMap[conversationId]?.source?.trim()?.takeIf { it.isNotBlank() }
+                ?: _uiState.value.activeSessionSource.trim().takeIf { it.isNotBlank() }
+        } else {
+            _uiState.value.activeSessionSource.trim().takeIf { it.isNotBlank() }
+        }
+        return when (rawSource?.lowercase()) {
+            "claude" -> "claude"
+            "cursor" -> "cursor"
+            "ide" -> "ide"
+            "cli", "antigravity", "live" -> "antigravity"
+            else -> _uiState.value.activeProvider.ifBlank { "antigravity" }
+        }
+    }
+
     fun selectProvider(provider: String, appendConfirmationStep: Boolean = true) {
         val normalized = when (provider.trim().lowercase()) {
             "claude", "claude-code" -> "claude"
@@ -1173,8 +1232,14 @@ class ChatViewModel @Inject constructor(
                     )
                 )
             }
+            val newSessionSrc = if (state.conversationId.isNullOrBlank() || state.conversationId == "new") {
+                normalized
+            } else {
+                state.activeSessionSource
+            }
             state.copy(
                 activeProvider = normalized,
+                activeSessionSource = newSessionSrc,
                 selectedModel = defaultModel,
                 conversationModel = if (defaultModel == "default") "" else defaultModel,
                 showProviderPickerDialog = false,
@@ -1239,7 +1304,7 @@ class ChatViewModel @Inject constructor(
             val cmdArg = if (spaceIdx >= 0) trimmedInput.substring(spaceIdx + 1).trim() else ""
 
             if (cmdLower == "/clear" || cmdLower == "/new" || cmdLower == "/reset") {
-                startNewConversation()
+                startNewConversation(preserveCurrentProvider = true)
                 return
             }
             if (cmdLower == "/settings" || cmdLower == "/config") {
@@ -1284,21 +1349,18 @@ class ChatViewModel @Inject constructor(
         val textToSend = text.ifBlank { "Attached an image." }
         val targetConversationId = _uiState.value.conversationId ?: "new"
         val existingSource = if (targetConversationId != "new") {
-            richSummaryMap[targetConversationId]?.source?.trim()?.lowercase() ?: ""
+            richSummaryMap[targetConversationId]?.source?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+                ?: _uiState.value.activeSessionSource.trim().lowercase()
         } else {
             ""
         }
-        val effectiveProvider = when {
-            existingSource == "claude" -> "claude"
-            existingSource == "cursor" -> "cursor"
-            existingSource in listOf("cli", "ide") -> "antigravity"
-            else -> _uiState.value.activeProvider
-        }
+        val effectiveRole = resolveEffectiveProvider(targetConversationId)
+        val effectiveProvider = if (effectiveRole == "ide") "antigravity" else effectiveRole
         val configuredDefault = getDefaultConfiguredModelId(effectiveProvider)
         val modelToSend = _uiState.value.selectedModel.takeIf { it.isNotBlank() && it != "default" }
             ?: configuredDefault
         val sourceToSend = when {
-            existingSource.isNotBlank() -> existingSource
+            existingSource in listOf("claude", "cursor", "cli", "ide") -> existingSource
             effectiveProvider == "claude" -> "claude"
             effectiveProvider == "cursor" -> "cursor"
             else -> "cli"
@@ -1379,20 +1441,105 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun startNewConversation() {
+    fun submitQuestionAnswers(step: TrajectoryStep, responses: List<QuestionResponsePayload>) {
+        if (responses.isEmpty()) return
+        val summaryParts = responses.mapNotNull { r ->
+            val parts = mutableListOf<String>()
+            parts.addAll(r.selectedOptions.filter { it.isNotBlank() })
+            if (r.writeInResponse.isNotBlank()) {
+                parts.add(r.writeInResponse.trim())
+            }
+            if (parts.isEmpty()) null else parts.joinToString(", ")
+        }
+        val summaryText = summaryParts.joinToString("\n").ifBlank { "Submitted answer" }
+
+        val activeAgentId = _uiState.value.activeAgentId
+            ?: _uiState.value.availableAgents.firstOrNull()?.id
+            ?: "antigravity"
+        val targetCid = _uiState.value.conversationId ?: "new"
+        val effectiveRole = resolveEffectiveProvider(targetCid)
+        val effectiveProvider = if (effectiveRole == "ide") "antigravity" else effectiveRole
+        val configuredDefault = getDefaultConfiguredModelId(effectiveProvider)
+        val modelToSend = _uiState.value.selectedModel.takeIf { it.isNotBlank() && it != "default" }
+            ?: configuredDefault
+        val sourceToSend = when (effectiveProvider) {
+            "claude" -> "claude"
+            "cursor" -> "cursor"
+            else -> "cli"
+        }
+        val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE)
+        val autoApprove = prefs?.getBoolean("auto_approve_mobile_tools", true) ?: true
+
+        _uiState.update { state ->
+            val updatedSteps = state.steps.map { existing ->
+                val isMatchingStep = (existing === step) ||
+                    (existing.stepCase == StepCase.ASK_QUESTION &&
+                        existing.stepIndex == step.stepIndex &&
+                        existing.value == step.value)
+                if (isMatchingStep) {
+                    val updatedQuestions = existing.questions.mapIndexed { qIdx, q ->
+                        val matchingResp = responses.find { it.question == q.question }
+                            ?: responses.getOrNull(qIdx)
+                        if (matchingResp != null) {
+                            val ans = buildList {
+                                addAll(matchingResp.selectedOptions.filter { it.isNotBlank() })
+                                if (matchingResp.writeInResponse.isNotBlank()) {
+                                    add(matchingResp.writeInResponse.trim())
+                                }
+                            }
+                            q.copy(selectedAnswers = ans)
+                        } else {
+                            q
+                        }
+                    }
+                    existing.copy(
+                        questions = updatedQuestions,
+                        isQuestionAnswered = true
+                    )
+                } else {
+                    existing
+                }
+            }.toMutableList()
+            updatedSteps.add(TrajectoryStep(case = "userInput", value = summaryText, stepIndex = -1))
+            state.copy(
+                steps = updatedSteps,
+                isGenerating = true,
+                error = null
+            )
+        }
+
+        webSocket.sendMessage(
+            OutboundMessage.SendMessage(
+                text = summaryText,
+                conversationId = targetCid,
+                model = modelToSend,
+                source = sourceToSend,
+                autoApprove = autoApprove,
+                questionResponses = responses,
+                agentId = activeAgentId
+            )
+        )
+    }
+
+    fun startNewConversation(preserveCurrentProvider: Boolean = false) {
         pollingJob?.cancel()
         lastStepIndex = -1
         pendingFullRefresh = false
         pendingFocusIsTranscriptStepIndex = false
-        val defaultProv = getDefaultConfiguredProvider()
-        val defaultModel = getDefaultConfiguredModelId(defaultProv)
+        val targetProv = if (preserveCurrentProvider) {
+            resolveEffectiveProvider().let { if (it == "ide") "antigravity" else it }
+        } else {
+            getDefaultConfiguredProvider()
+        }
+        val defaultModel = getDefaultConfiguredModelId(targetProv)
         _uiState.update {
             it.copy(
                 steps = emptyList(),
                 conversationId = "new",
                 isGenerating = false,
                 error = null,
-                activeProvider = defaultProv,
+                activeProvider = targetProv,
+                activeSessionSource = if (preserveCurrentProvider) targetProv else "",
                 selectedModel = defaultModel,
                 conversationModel = if (defaultModel == "default") "" else defaultModel,
                 focusedOriginalStepIndex = null,
@@ -1464,6 +1611,7 @@ class ChatViewModel @Inject constructor(
                     isGenerating = false,
                     error = null,
                     activeProvider = inferredProvider,
+                    activeSessionSource = convSource,
                     selectedModel = "default",
                     conversationModel = convModel,
                     showConversationPickerSheet = false,

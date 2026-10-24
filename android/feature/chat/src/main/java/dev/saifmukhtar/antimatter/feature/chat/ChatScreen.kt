@@ -51,8 +51,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
+import dev.saifmukhtar.antimatter.core.network.AskQuestionPrompt
 import dev.saifmukhtar.antimatter.core.network.BridgeWebSocket
 import dev.saifmukhtar.antimatter.core.network.ConversationSummary
+import dev.saifmukhtar.antimatter.core.network.QuestionResponsePayload
 import dev.saifmukhtar.antimatter.core.network.StepCase
 import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
 import dev.saifmukhtar.antimatter.core.ui.MarkdownText
@@ -117,7 +119,9 @@ fun groupSteps(steps: List<TrajectoryStep>): List<ChatItem> {
                 StepCase.MARKDOWN_CHUNK,
                 StepCase.TOOL_CALL,
                 StepCase.PLANNER_RESPONSE,
-                StepCase.ERROR_MESSAGE
+                StepCase.ERROR_MESSAGE,
+                StepCase.ASK_QUESTION,
+                StepCase.ELICITATION
             )
         ) {
             origIdx to step
@@ -250,6 +254,27 @@ fun ChatScreen(
 
     val activeConversationSummary = remember(uiState.conversationId, uiState.history) {
         uiState.history.find { it.id == uiState.conversationId }
+    }
+
+    val effectiveProvider = remember(
+        uiState.conversationId,
+        activeConversationSummary?.source,
+        uiState.activeSessionSource,
+        uiState.activeProvider
+    ) {
+        val rawSource = if (!uiState.conversationId.isNullOrBlank() && uiState.conversationId != "new") {
+            activeConversationSummary?.source?.takeIf { it.isNotBlank() }
+                ?: uiState.activeSessionSource.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+        when (rawSource?.trim()?.lowercase()) {
+            "claude" -> "claude"
+            "cursor" -> "cursor"
+            "ide" -> "ide"
+            "cli", "antigravity" -> "antigravity"
+            else -> uiState.activeProvider.ifBlank { "antigravity" }
+        }
     }
 
     // Clamp scroll restoration index and restore only when no pending prompt focus is requested
@@ -622,7 +647,8 @@ fun ChatScreen(
                     onSend = onSendPrompt,
                     onCancel = onCancel,
                     selectedImageUri = uiState.selectedImageUri,
-                    onSelectImage = onSelectImage
+                    onSelectImage = onSelectImage,
+                    activeProvider = effectiveProvider
                 )
             }
         ) { padding ->
@@ -803,6 +829,15 @@ fun ChatScreen(
                                                         step = step,
                                                         onAcceptEdits = onAcceptEdits,
                                                         onRejectEdits = onRejectEdits
+                                                    )
+                                                }
+                                                StepCase.ASK_QUESTION,
+                                                StepCase.ELICITATION -> {
+                                                    AskQuestionCard(
+                                                        step = step,
+                                                        onSubmitAnswers = { responses ->
+                                                            viewModel.submitQuestionAnswers(step, responses)
+                                                        }
                                                     )
                                                 }
                                                 else -> {}
@@ -1827,6 +1862,270 @@ fun ConversationRichCard(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AskQuestionCard(
+    step: TrajectoryStep,
+    onSubmitAnswers: (List<QuestionResponsePayload>) -> Unit
+) {
+    var isSubmittedLocal by remember(step.stepIndex, step.isQuestionAnswered) {
+        mutableStateOf(step.isQuestionAnswered)
+    }
+    val isAnswered = step.isQuestionAnswered || isSubmittedLocal
+    val questions = step.questions
+
+    val selectedByQuestion = remember(step.stepIndex, questions) {
+        mutableStateMapOf<Int, List<String>>().apply {
+            questions.forEachIndexed { idx, q ->
+                put(idx, q.selectedAnswers)
+            }
+        }
+    }
+    val writeInByQuestion = remember(step.stepIndex, questions) {
+        mutableStateMapOf<Int, String>()
+    }
+    var plainWriteIn by remember(step.stepIndex) { mutableStateOf("") }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFF141829),
+        border = BorderStroke(
+            1.5.dp,
+            if (isAnswered) Color(0xFF10B981).copy(alpha = 0.65f) else Color(0xFF38BDF8)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MiniTagBadge(
+                    text = if (questions.size > 1) "AGENT QUESTIONS (${questions.size})" else "AGENT QUESTION",
+                    bgColor = Color(0xFF083344),
+                    textColor = Color(0xFF38BDF8)
+                )
+                MiniTagBadge(
+                    text = if (isAnswered) "Answered ✓" else "Action Required",
+                    bgColor = if (isAnswered) Color(0xFF064E3B) else Color(0xFF312E81),
+                    textColor = if (isAnswered) Color(0xFF34D399) else Color(0xFFC7D2FE)
+                )
+            }
+
+            if (questions.isEmpty()) {
+                Text(
+                    text = step.value ?: "Agent is waiting for your response.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium
+                )
+                if (!isAnswered) {
+                    OutlinedTextField(
+                        value = plainWriteIn,
+                        onValueChange = { plainWriteIn = it },
+                        placeholder = { Text("Other / custom response...") },
+                        singleLine = false,
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Button(
+                        onClick = {
+                            val trimmed = plainWriteIn.trim()
+                            if (trimmed.isNotEmpty()) {
+                                isSubmittedLocal = true
+                                onSubmitAnswers(
+                                    listOf(
+                                        QuestionResponsePayload(
+                                            question = step.value ?: "Question",
+                                            selectedOptions = emptyList(),
+                                            writeInResponse = trimmed
+                                        )
+                                    )
+                                )
+                            }
+                        },
+                        enabled = plainWriteIn.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF0284C7),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Submit Answer", fontWeight = FontWeight.Bold)
+                    }
+                }
+            } else {
+                questions.forEachIndexed { qIdx, q ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (questions.size > 1) {
+                            Text(
+                                text = "Question ${qIdx + 1} of ${questions.size}" +
+                                    if (q.isMultiSelect) " · Select all that apply" else " · Select one",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF93C5FD),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        } else if (q.isMultiSelect) {
+                            Text(
+                                text = "Select all that apply",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF93C5FD),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        Text(
+                            text = q.question,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        val currentSelected = selectedByQuestion[qIdx] ?: emptyList()
+
+                        q.options.forEach { opt ->
+                            val isSelected = currentSelected.contains(opt)
+                            Surface(
+                                onClick = {
+                                    if (!isAnswered) {
+                                        if (q.isMultiSelect) {
+                                            val updated = if (isSelected) {
+                                                currentSelected - opt
+                                            } else {
+                                                currentSelected + opt
+                                            }
+                                            selectedByQuestion[qIdx] = updated
+                                        } else {
+                                            selectedByQuestion[qIdx] = listOf(opt)
+                                        }
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) Color(0xFF1E293B) else Color(0xFF0F131F),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isSelected) Color(0xFF38BDF8) else Color(0xFF2D3348)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (q.isMultiSelect) {
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = null,
+                                            enabled = !isAnswered
+                                        )
+                                    } else {
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = null,
+                                            enabled = !isAnswered
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = opt,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (isSelected) Color(0xFFE0F2FE) else Color(0xFFD1D5DB),
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (!isAnswered) {
+                            OutlinedTextField(
+                                value = writeInByQuestion[qIdx] ?: "",
+                                onValueChange = { writeInByQuestion[qIdx] = it },
+                                placeholder = {
+                                    Text(
+                                        "Other / custom response...",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                },
+                                singleLine = false,
+                                maxLines = 3,
+                                textStyle = MaterialTheme.typography.bodySmall.copy(color = Color.White),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else if (currentSelected.isNotEmpty() || !writeInByQuestion[qIdx].isNullOrBlank()) {
+                            val combinedAns = buildList {
+                                addAll(currentSelected)
+                                val wi = writeInByQuestion[qIdx]?.trim()
+                                if (!wi.isNullOrBlank() && !currentSelected.contains(wi)) {
+                                    add(wi)
+                                }
+                            }.joinToString(", ")
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF064E3B).copy(alpha = 0.45f),
+                                border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Selected: $combinedAns",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color(0xFF6EE7B7),
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (!isAnswered) {
+                    val canSubmit = questions.indices.any { idx ->
+                        !selectedByQuestion[idx].isNullOrEmpty() || !writeInByQuestion[idx].isNullOrBlank()
+                    }
+                    Button(
+                        onClick = {
+                            val payloads = questions.mapIndexed { idx, q ->
+                                QuestionResponsePayload(
+                                    question = q.question,
+                                    selectedOptions = selectedByQuestion[idx] ?: emptyList(),
+                                    writeInResponse = writeInByQuestion[idx]?.trim() ?: ""
+                                )
+                            }.filter { it.selectedOptions.isNotEmpty() || it.writeInResponse.isNotBlank() }
+                            if (payloads.isNotEmpty()) {
+                                isSubmittedLocal = true
+                                onSubmitAnswers(payloads)
+                            }
+                        },
+                        enabled = canSubmit,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF0284C7),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text(
+                            text = if (questions.size > 1) "Submit Answers" else "Submit Answer",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }

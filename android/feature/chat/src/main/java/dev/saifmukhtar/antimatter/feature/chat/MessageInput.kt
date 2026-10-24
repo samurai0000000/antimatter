@@ -32,7 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -43,7 +45,8 @@ import androidx.compose.ui.unit.sp
 data class SlashCommandSpec(
     val command: String,
     val description: String,
-    val executeImmediatelyOnTap: Boolean
+    val executeImmediatelyOnTap: Boolean,
+    val insertText: String = "$command "
 )
 
 val slashCommandCatalog = listOf(
@@ -72,7 +75,64 @@ val slashCommandCatalog = listOf(
     SlashCommandSpec("/btw", "Ask a quick side question without altering main task", executeImmediatelyOnTap = false)
 )
 
+val claudeSlashCommandCatalog = listOf(
+    SlashCommandSpec("/compact", "Compact conversation context in-place via Claude CLI", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/clear", "Clear screen and start a fresh Claude Code session", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/new", "Start a fresh Claude Code session", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/help", "Show available commands and usage guide", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/model", "View or switch active AI model", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/effort", "Set reasoning effort level (low, medium, high, max)", executeImmediatelyOnTap = false),
+    SlashCommandSpec("/plan", "Enter structured planning mode before execution", executeImmediatelyOnTap = false),
+    SlashCommandSpec("/doctor", "Diagnose session & gateway connection health", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/status", "Show active provider, session & connection status", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/provider", "Switch default AI CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/claude", "Switch to Claude Code CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/cursor", "Switch to Cursor Agent CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/agy", "Switch to Google Antigravity CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/settings", "Open connection & notification settings", executeImmediatelyOnTap = true)
+)
+
+val cursorSlashCommandCatalog = listOf(
+    SlashCommandSpec("/compact", "Summarize & compact session into a fresh Cursor context", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/summarize", "Summarize & compact session into a fresh Cursor context", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/clear", "Clear screen and start a fresh Cursor Agent session", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/new", "Start a fresh Cursor Agent session", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/help", "Show available commands and usage guide", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/model", "View or switch active AI model", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/models", "List available models", executeImmediatelyOnTap = true, insertText = "/model "),
+    SlashCommandSpec("/plan", "Switch to plan mode before execution", executeImmediatelyOnTap = false),
+    SlashCommandSpec("/ask", "Ask a question in read-only / Q&A mode", executeImmediatelyOnTap = false, insertText = "/ask "),
+    SlashCommandSpec("/status", "Show active provider, session & connection status", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/provider", "Switch default AI CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/claude", "Switch to Claude Code CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/cursor", "Switch to Cursor Agent CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/agy", "Switch to Google Antigravity CLI provider", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/settings", "Open connection & notification settings", executeImmediatelyOnTap = true)
+)
+
 val slashCommands = slashCommandCatalog.map { it.command }
+
+fun placeholderForProvider(provider: String): String {
+    return when (provider.trim().lowercase()) {
+        "claude" -> "Ask Claude Code or type /..."
+        "cursor" -> "Ask Cursor Agent or type /..."
+        "ide" -> "Ask Antigravity IDE or type /..."
+        else -> "Ask Google Antigravity or type /..."
+    }
+}
+
+fun slashCommandCatalogForProvider(provider: String): List<SlashCommandSpec> {
+    return when (provider.trim().lowercase()) {
+        "claude" -> claudeSlashCommandCatalog
+        "cursor" -> cursorSlashCommandCatalog
+        else -> slashCommandCatalog
+    }
+}
+
+fun computeMaxPromptInputHeightDp(screenHeightDp: Int, imeBottomDp: Int): Int {
+    val availableAboveKeyboardDp = (screenHeightDp - imeBottomDp - 80).coerceAtLeast(180)
+    return (availableAboveKeyboardDp * 0.40f).toInt().coerceIn(88, 168)
+}
 
 @Composable
 fun MessageInput(
@@ -81,11 +141,18 @@ fun MessageInput(
     onCancel: () -> Unit,
     selectedImageUri: Uri? = null,
     onSelectImage: (Uri?) -> Unit = {},
+    activeProvider: String = "antigravity",
     modifier: Modifier = Modifier
 ) {
     var text by remember { mutableStateOf("") }
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp().value.toInt() }
+    val maxInputHeightDp = computeMaxPromptInputHeightDp(configuration.screenHeightDp, imeBottomDp).dp
+    val providerCatalog = remember(activeProvider) { slashCommandCatalogForProvider(activeProvider) }
+    val placeholderText = remember(activeProvider) { placeholderForProvider(activeProvider) }
 
     val speechLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -108,11 +175,11 @@ fun MessageInput(
         }
     }
 
-    val matchingSlashCommands = remember(text) {
+    val matchingSlashCommands = remember(text, providerCatalog) {
         val trimmed = text.trimStart()
         if (trimmed.startsWith("/") && !trimmed.contains(' ') && !trimmed.contains('\n')) {
             val query = trimmed.lowercase()
-            slashCommandCatalog.filter {
+            providerCatalog.filter {
                 it.command.lowercase().startsWith(query) ||
                     it.description.lowercase().contains(query.removePrefix("/"))
             }
@@ -169,7 +236,7 @@ fun MessageInput(
                                             text = ""
                                             onSend(spec.command)
                                         } else {
-                                            text = "${spec.command} "
+                                            text = spec.insertText
                                         }
                                     }
                                     .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -263,27 +330,30 @@ fun MessageInput(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(28.dp),
+                    .heightIn(min = 52.dp, max = maxInputHeightDp),
+                shape = RoundedCornerShape(26.dp),
                 color = Color(0xFF16161B),
                 border = BorderStroke(1.dp, Color(0xFF383842))
             ) {
                 Row(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .fillMaxWidth()
+                        .padding(start = 18.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.Bottom
                 ) {
                     androidx.compose.foundation.text.BasicTextField(
                         value = text,
                         onValueChange = { text = it },
-                        modifier = Modifier.weight(1f),
+                        maxLines = 6,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = 8.dp),
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.White),
                         cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF6C5CE7)),
                         decorationBox = { innerTextField ->
                             if (text.isEmpty()) {
                                 Text(
-                                    text = "Ask Google Antigravity or type /...",
+                                    text = placeholderText,
                                     color = Color(0xFF9CA3AF),
                                     style = MaterialTheme.typography.bodyLarge
                                 )
