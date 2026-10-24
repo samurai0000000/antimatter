@@ -134,6 +134,17 @@ class AimonCompanionFullGuiFlowTest {
             val def = inv.getArgument<Boolean>(1)
             prefsBacking[k]?.toBooleanStrictOrNull() ?: def
         }
+        `when`(mockEditor.putInt(anyString(), anyInt())).thenAnswer { inv ->
+            val k = inv.getArgument<String>(0)
+            val v = inv.getArgument<Int>(1)
+            prefsBacking[k] = v.toString()
+            mockEditor
+        }
+        `when`(mockPrefs.getInt(anyString(), anyInt())).thenAnswer { inv ->
+            val k = inv.getArgument<String>(0)
+            val def = inv.getArgument<Int>(1)
+            prefsBacking[k]?.toIntOrNull() ?: def
+        }
 
         setupServerRoutes()
         serverSocket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
@@ -1133,6 +1144,110 @@ class AimonCompanionFullGuiFlowTest {
         chatVm.sendMessage("/clear")
         assertEquals("new", chatVm.uiState.value.conversationId)
         assertTrue(chatVm.uiState.value.steps.isEmpty())
+    }
+
+    @Test
+    fun testMultiProviderSettingsDescendingActivitySortAndCutoff() = runBlocking {
+        // 1. Verify slash command catalog includes /provider, /claude, /cursor, /agy
+        val cmds = slashCommandCatalog.associateBy { it.command }
+        assertTrue(cmds.containsKey("/provider"))
+        assertTrue(cmds.containsKey("/claude"))
+        assertTrue(cmds.containsKey("/cursor"))
+        assertTrue(cmds.containsKey("/agy"))
+
+        // 2. Verify AimonAppPreferences multi-provider settings & 24h cut-off slider clamping
+        AimonAppPreferences.init(mockApplication)
+        assertEquals(24, AimonAppPreferences.sessionCutoffHours.value)
+        AimonAppPreferences.setSessionCutoffHours(mockApplication, 48)
+        assertEquals(48, AimonAppPreferences.sessionCutoffHours.value)
+        AimonAppPreferences.setSessionCutoffHours(mockApplication, 0)
+        assertEquals(1, AimonAppPreferences.sessionCutoffHours.value)
+        AimonAppPreferences.setSessionCutoffHours(mockApplication, 500)
+        assertEquals(168, AimonAppPreferences.sessionCutoffHours.value)
+        AimonAppPreferences.setSessionCutoffHours(mockApplication, 24)
+
+        AimonAppPreferences.setAutoApproveMobileTools(mockApplication, false)
+        assertFalse(AimonAppPreferences.autoApproveMobileTools.value)
+        AimonAppPreferences.setAutoApproveMobileTools(mockApplication, true)
+        assertTrue(AimonAppPreferences.autoApproveMobileTools.value)
+
+        AimonAppPreferences.setDefaultProvider(mockApplication, "claude")
+        assertEquals("claude", AimonAppPreferences.defaultProvider.value)
+        AimonAppPreferences.setDefaultClaudeModelId(mockApplication, "claude-opus-4-7")
+        assertEquals("claude-opus-4-7", AimonAppPreferences.defaultClaudeModelId.value)
+        AimonAppPreferences.setDefaultCursorModelId(mockApplication, "sonnet-4.6")
+        assertEquals("sonnet-4.6", AimonAppPreferences.defaultCursorModelId.value)
+        AimonAppPreferences.setDefaultProvider(mockApplication, "antigravity")
+
+        // 3. Configure /api/agent/conversations with mixed providers and timestamps
+        val nowSec = System.currentTimeMillis() / 1000L
+        registerRoute("/api/agent/conversations", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "conversations": [
+                {"id": "conv-old-agy", "title": "Old AGY Session", "source": "cli", "workspace": "aimon", "timestamp": ${nowSec - 72 * 3600}},
+                {"id": "conv-mid-claude", "title": "Claude Refactor", "source": "claude", "workspace": "aimon", "timestamp": ${nowSec - 2 * 3600}},
+                {"id": "conv-newest-cursor", "title": "Cursor Latest Fix", "source": "cursor", "workspace": "netmon", "timestamp": ${nowSec - 300}}
+              ]
+            }
+            """.trimIndent()
+        }
+
+        val mockUserPrefs = mock(UserPreferencesRepository::class.java)
+        val mockDao = mock(AppDao::class.java)
+        `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+
+        val bridgeWebSocket = BridgeWebSocket(mockApplication)
+        val chatVm = ChatViewModel(mockApplication, bridgeWebSocket, mockUserPrefs, mockDao)
+        chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
+
+        waitUntil { chatVm.uiState.value.history.size == 3 }
+
+        // Strictly sorted in descending order of last activity
+        val sortedHistory = chatVm.uiState.value.history
+        assertEquals("conv-newest-cursor", sortedHistory[0].id)
+        assertEquals("conv-mid-claude", sortedHistory[1].id)
+        assertEquals("conv-old-agy", sortedHistory[2].id)
+
+        // Filter by provider chip: CLAUDE
+        chatVm.setWorkspaceFilter("CLAUDE")
+        assertEquals(1, chatVm.uiState.value.filteredHistory.size)
+        assertEquals("conv-mid-claude", chatVm.uiState.value.filteredHistory[0].id)
+
+        // Filter by provider chip: CURSOR
+        chatVm.setWorkspaceFilter("CURSOR")
+        assertEquals(1, chatVm.uiState.value.filteredHistory.size)
+        assertEquals("conv-newest-cursor", chatVm.uiState.value.filteredHistory[0].id)
+
+        // Disabling Claude sessions in Settings hides Claude from ALL filter
+        chatVm.setWorkspaceFilter("ALL")
+        AimonAppPreferences.setClaudeSessionsEnabled(mockApplication, false)
+        chatVm.reapplySearchFilter()
+        assertEquals(2, chatVm.uiState.value.filteredHistory.size)
+        assertTrue(chatVm.uiState.value.filteredHistory.none { it.source == "claude" })
+        AimonAppPreferences.setClaudeSessionsEnabled(mockApplication, true)
+        chatVm.reapplySearchFilter()
+        assertEquals(3, chatVm.uiState.value.filteredHistory.size)
+
+        // Expand/collapse older sessions toggle
+        assertFalse(chatVm.uiState.value.showOlderSessions)
+        chatVm.setShowOlderSessions(true)
+        assertTrue(chatVm.uiState.value.showOlderSessions)
+        chatVm.setShowOlderSessions(false)
+        assertFalse(chatVm.uiState.value.showOlderSessions)
+
+        // Slash commands /claude, /cursor, /agy, /provider
+        chatVm.sendMessage("/claude")
+        assertEquals("claude", chatVm.uiState.value.activeProvider)
+        chatVm.sendMessage("/cursor")
+        assertEquals("cursor", chatVm.uiState.value.activeProvider)
+        chatVm.sendMessage("/agy")
+        assertEquals("antigravity", chatVm.uiState.value.activeProvider)
+        chatVm.sendMessage("/provider")
+        assertTrue(chatVm.uiState.value.showProviderPickerDialog)
+        chatVm.setShowProviderPickerDialog(false)
     }
 }
 

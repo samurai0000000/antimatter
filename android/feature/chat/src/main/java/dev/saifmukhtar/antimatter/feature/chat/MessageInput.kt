@@ -49,6 +49,10 @@ data class SlashCommandSpec(
 val slashCommandCatalog = listOf(
     SlashCommandSpec("/clear", "Clear active chat & start a fresh conversation", executeImmediatelyOnTap = true),
     SlashCommandSpec("/model", "Switch the AI model for this session", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/provider", "Switch AI provider (Antigravity, Claude Code, Cursor)", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/claude", "Switch active provider to Claude Code CLI", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/cursor", "Switch active provider to Cursor Agent CLI", executeImmediatelyOnTap = true),
+    SlashCommandSpec("/agy", "Switch active provider to Google Antigravity", executeImmediatelyOnTap = true),
     SlashCommandSpec("/compact", "Compact & summarize conversation history to free context", executeImmediatelyOnTap = true),
     SlashCommandSpec("/help", "Show available slash commands & CLI shortcuts", executeImmediatelyOnTap = true),
     SlashCommandSpec("/usage", "Show Antigravity model quota & reset timers", executeImmediatelyOnTap = true),

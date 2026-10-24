@@ -73,6 +73,11 @@ class AimonNotificationManager(private val context: Context) {
     ) {
         AimonAppPreferences.init(context)
 
+        // Respect per-provider notification toggle
+        if (!AimonAppPreferences.isProviderNotificationEnabled(source)) {
+            return
+        }
+
         if (conversationId.isNotBlank() && stepIndex >= 0) {
             val dedupKey = "$conversationId:$stepIndex:$event"
             synchronized(notifiedEventsLock) {
@@ -89,12 +94,12 @@ class AimonNotificationManager(private val context: Context) {
 
         val isQuestion = (event == "agent_question")
 
-        // 1. Play Desktop IDE Chime Sound if enabled
+        // 1. Play provider-distinct harmonic Chime Sound if enabled
         if (AimonAppPreferences.soundEnabled.value) {
             if (isQuestion) {
-                AimonSoundPlayer.playAgentQuestionChime(context)
+                AimonSoundPlayer.playAgentQuestionChime(context, source)
             } else {
-                AimonSoundPlayer.playPromptAnsweredChime(context)
+                AimonSoundPlayer.playPromptAnsweredChime(context, source)
             }
         }
 
@@ -172,14 +177,24 @@ class AimonNotificationManager(private val context: Context) {
 
         ensureChannels()
 
+        val providerBadge = when (source.trim().lowercase()) {
+            "claude" -> "[CLAUDE]"
+            "cursor" -> "[CURSOR]"
+            "ide" -> "[IDE]"
+            else -> "[AGY]"
+        }
         val effectiveTitle = title.ifBlank {
             if (conversationId.isNotBlank() && conversationId != "new") {
                 "Session ${conversationId.take(8)}"
             } else {
-                "Antigravity"
+                when (source.trim().lowercase()) {
+                    "claude" -> "Claude Code"
+                    "cursor" -> "Cursor Agent"
+                    else -> "Antigravity"
+                }
             }
         }
-        val headerPrefix = if (isQuestion) "Agent Question" else "Prompt Answered"
+        val headerPrefix = if (isQuestion) "$providerBadge Agent Question" else "$providerBadge Prompt Answered"
         val notifTitle = "$headerPrefix • $effectiveTitle"
         val notifBody = buildString {
             if (workspace.isNotBlank()) {

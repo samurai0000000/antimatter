@@ -61,6 +61,25 @@ val AVAILABLE_MODEL_OPTIONS = listOf(
     ModelOption("gpt-oss-120b", "GPT-OSS 120B", "Open-weights 120B model")
 )
 
+val CLAUDE_MODEL_OPTIONS = listOf(
+    ModelOption("claude-sonnet-4-6", "Claude Sonnet 4.6", "Balanced coding & verification"),
+    ModelOption("claude-opus-4-7", "Claude Opus 4.7", "Deep architectural reasoning"),
+    ModelOption("claude-haiku-4-5", "Claude Haiku 4.5", "Fast lightweight tasks")
+)
+
+val CURSOR_MODEL_OPTIONS = listOf(
+    ModelOption("auto", "Auto (Cursor Default)", "Automatically selects best Cursor model"),
+    ModelOption("sonnet-4.6", "Claude 4.6 Sonnet", "Anthropic Sonnet in Cursor"),
+    ModelOption("opus-4.7", "Claude 4.7 Opus", "Anthropic Opus in Cursor"),
+    ModelOption("gpt-5.4-high", "GPT-5.4 High", "OpenAI high reasoning in Cursor"),
+    ModelOption("gemini-3.1-pro", "Gemini 3.1 Pro", "Google Gemini Pro in Cursor")
+)
+
+fun normalizeConversationTimestampMs(ts: Long): Long {
+    if (ts <= 0L) return 0L
+    return if (ts < 10_000_000_000L) ts * 1000L else ts
+}
+
 data class ChatUiState(
     val connectionState: BridgeWebSocket.ConnectionState = BridgeWebSocket.ConnectionState.DISCONNECTED,
     val isGenerating: Boolean = false,
@@ -74,6 +93,7 @@ data class ChatUiState(
     val currentModel: String = "gemini-4-argon-medium",
     val selectedModel: String = "default",
     val conversationModel: String = "",
+    val activeProvider: String = "antigravity",
     val error: String? = null,
     val history: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
     val filteredHistory: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
@@ -84,6 +104,8 @@ data class ChatUiState(
     val showConversationPickerSheet: Boolean = false,
     val showPromptsSheet: Boolean = false,
     val showModelPickerDialog: Boolean = false,
+    val showProviderPickerDialog: Boolean = false,
+    val showOlderSessions: Boolean = false,
     val pendingOpenSettingsTab: Boolean = false,
     val isInChatSearchActive: Boolean = false,
     val inChatSearchQuery: String = "",
@@ -262,52 +284,50 @@ class ChatViewModel @Inject constructor(
     private fun mergeSummaryWithRich(
         incoming: dev.saifmukhtar.antimatter.core.network.ConversationSummary
     ): dev.saifmukhtar.antimatter.core.network.ConversationSummary {
-        val prev = richSummaryMap[incoming.id] ?: return incoming
+        val normIncoming = incoming.copy(timestamp = normalizeConversationTimestampMs(incoming.timestamp))
+        val prev = richSummaryMap[normIncoming.id] ?: return normIncoming
         val bestTitle = when {
-            incoming.title.isNotBlank() && incoming.title != "Chat" -> incoming.title
+            normIncoming.title.isNotBlank() && normIncoming.title != "Chat" -> normIncoming.title
             prev.title.isNotBlank() && prev.title != "Chat" -> prev.title
-            else -> incoming.title.ifBlank { prev.title }
+            else -> normIncoming.title.ifBlank { prev.title }
         }
-        val bestTs = maxOf(prev.timestamp, incoming.timestamp)
-        val mergedPrompts = if (incoming.userPrompts.isNotEmpty()) incoming.userPrompts else prev.userPrompts
-        return incoming.copy(
+        val bestTs = maxOf(normalizeConversationTimestampMs(prev.timestamp), normIncoming.timestamp)
+        val mergedPrompts = if (normIncoming.userPrompts.isNotEmpty()) normIncoming.userPrompts else prev.userPrompts
+        return normIncoming.copy(
             title = bestTitle,
             timestamp = bestTs,
-            source = incoming.source.ifBlank { prev.source },
-            workspace = incoming.workspace.ifBlank { prev.workspace },
-            workspacePath = incoming.workspacePath.ifBlank { prev.workspacePath },
-            model = incoming.model.ifBlank { prev.model },
-            active = incoming.active || (incoming.stepCount == 0 && prev.active),
-            openInTerminal = incoming.openInTerminal || (incoming.stepCount == 0 && prev.openInTerminal),
-            terminalPts = incoming.terminalPts.ifBlank { prev.terminalPts },
-            stepCount = maxOf(prev.stepCount, incoming.stepCount),
-            firstPrompt = incoming.firstPrompt.ifBlank { prev.firstPrompt },
-            lastPrompt = incoming.lastPrompt.ifBlank { prev.lastPrompt },
-            lastPromptStepIndex = if (incoming.lastPromptStepIndex >= 0) incoming.lastPromptStepIndex else prev.lastPromptStepIndex,
+            source = normIncoming.source.ifBlank { prev.source },
+            workspace = normIncoming.workspace.ifBlank { prev.workspace },
+            workspacePath = normIncoming.workspacePath.ifBlank { prev.workspacePath },
+            model = normIncoming.model.ifBlank { prev.model },
+            active = normIncoming.active || (normIncoming.stepCount == 0 && prev.active),
+            openInTerminal = normIncoming.openInTerminal || (normIncoming.stepCount == 0 && prev.openInTerminal),
+            terminalPts = normIncoming.terminalPts.ifBlank { prev.terminalPts },
+            stepCount = maxOf(prev.stepCount, normIncoming.stepCount),
+            firstPrompt = normIncoming.firstPrompt.ifBlank { prev.firstPrompt },
+            lastPrompt = normIncoming.lastPrompt.ifBlank { prev.lastPrompt },
+            lastPromptStepIndex = if (normIncoming.lastPromptStepIndex >= 0) normIncoming.lastPromptStepIndex else prev.lastPromptStepIndex,
             userPrompts = mergedPrompts,
-            matchedPrompt = incoming.matchedPrompt.ifBlank { prev.matchedPrompt },
-            matchedStepIndex = if (incoming.matchedStepIndex >= 0) incoming.matchedStepIndex else prev.matchedStepIndex
+            matchedPrompt = normIncoming.matchedPrompt.ifBlank { prev.matchedPrompt },
+            matchedStepIndex = if (normIncoming.matchedStepIndex >= 0) normIncoming.matchedStepIndex else prev.matchedStepIndex
         )
     }
 
     private fun sortConversations(
         list: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary>
     ): List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> {
-        val now = System.currentTimeMillis()
-        val sevenDaysMs = 7L * 24L * 3600L * 1000L
         return list.sortedWith(
             compareByDescending<dev.saifmukhtar.antimatter.core.network.ConversationSummary> {
-                (it.openInTerminal || it.active) && (now - it.timestamp <= sevenDaysMs)
+                normalizeConversationTimestampMs(it.timestamp)
             }.thenByDescending { it.openInTerminal }
                 .thenByDescending { it.active }
-                .thenByDescending { it.timestamp }
         )
     }
 
     private fun rebuildHistoryFromMap(localEntities: List<ConversationEntity>? = null) {
         val combined = LinkedHashMap<String, dev.saifmukhtar.antimatter.core.network.ConversationSummary>()
         for ((id, summary) in richSummaryMap) {
-            combined[id] = summary
+            combined[id] = summary.copy(timestamp = normalizeConversationTimestampMs(summary.timestamp))
         }
         localEntities?.forEach { entity ->
             val existingRich = combined[entity.id]
@@ -317,9 +337,10 @@ class ChatViewModel @Inject constructor(
                     entity.title.isNotBlank() && entity.title != "Chat" -> entity.title
                     else -> existingRich.title.ifBlank { entity.title }
                 }
+                val richTs = normalizeConversationTimestampMs(existingRich.timestamp)
                 val merged = existingRich.copy(
                     title = bestTitle,
-                    timestamp = maxOf(existingRich.timestamp, entity.timestamp),
+                    timestamp = if (richTs > 0L) richTs else normalizeConversationTimestampMs(entity.timestamp),
                     stepCount = maxOf(existingRich.stepCount, entity.stepCount)
                 )
                 combined[entity.id] = merged
@@ -328,7 +349,7 @@ class ChatViewModel @Inject constructor(
                 val fromEntity = dev.saifmukhtar.antimatter.core.network.ConversationSummary(
                     id = entity.id,
                     title = entity.title,
-                    timestamp = entity.timestamp,
+                    timestamp = normalizeConversationTimestampMs(entity.timestamp),
                     stepCount = entity.stepCount
                 )
                 combined[entity.id] = fromEntity
@@ -375,15 +396,29 @@ class ChatViewModel @Inject constructor(
 
     fun reapplySearchFilter() {
         val state = _uiState.value
-        val allHistory = state.history
+        val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE)
+        val agyEnabled = prefs?.getBoolean("antigravity_sessions_enabled", true) ?: true
+        val claudeEnabled = prefs?.getBoolean("claude_sessions_enabled", true) ?: true
+        val cursorEnabled = prefs?.getBoolean("cursor_sessions_enabled", true) ?: true
+
+        val allHistory = state.history.filter { conv ->
+            when (conv.source.trim().lowercase()) {
+                "claude" -> claudeEnabled
+                "cursor" -> cursorEnabled
+                else -> agyEnabled
+            }
+        }
         val workspaces = allHistory
             .mapNotNull { it.workspace.takeIf { w -> w.isNotBlank() } }
             .distinct()
             .sorted()
 
         val wsFilter = state.selectedWorkspaceFilter
-        val wsFiltered = when (wsFilter) {
+        val wsFiltered = when (wsFilter.uppercase()) {
             "ALL" -> allHistory
+            "AGY" -> allHistory.filter { it.source.trim().lowercase() in listOf("cli", "ide", "") }
+            "CLAUDE" -> allHistory.filter { it.source.equals("claude", ignoreCase = true) }
+            "CURSOR" -> allHistory.filter { it.source.equals("cursor", ignoreCase = true) }
             "OPEN_AGY", "OPEN" -> allHistory.filter { it.openInTerminal || it.active }
             else -> allHistory.filter { it.workspace.equals(wsFilter, ignoreCase = true) }
         }
@@ -1089,18 +1124,70 @@ class ChatViewModel @Inject constructor(
         _uiState.update { it.copy(showModelPickerDialog = show) }
     }
 
+    fun setShowProviderPickerDialog(show: Boolean) {
+        _uiState.update { it.copy(showProviderPickerDialog = show) }
+    }
+
+    fun setShowOlderSessions(show: Boolean) {
+        _uiState.update { it.copy(showOlderSessions = show) }
+    }
+
     fun consumeOpenSettingsTab() {
         _uiState.update { it.copy(pendingOpenSettingsTab = false) }
     }
 
-    private fun getDefaultConfiguredModelId(): String {
+    private fun getDefaultConfiguredProvider(): String {
+        val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE) ?: return "antigravity"
+        return prefs.getString("default_provider", "antigravity")?.takeIf { it.isNotBlank() } ?: "antigravity"
+    }
+
+    private fun getDefaultConfiguredModelId(provider: String = _uiState.value.activeProvider): String {
         val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE) ?: return "default"
-        return prefs.getString("default_model_id", "default")?.takeIf { it.isNotBlank() } ?: "default"
+        return when (provider.trim().lowercase()) {
+            "claude" -> prefs.getString("default_claude_model_id", "claude-sonnet-4-6")?.takeIf { it.isNotBlank() } ?: "claude-sonnet-4-6"
+            "cursor" -> prefs.getString("default_cursor_model_id", "auto")?.takeIf { it.isNotBlank() } ?: "auto"
+            else -> prefs.getString("default_model_id", "default")?.takeIf { it.isNotBlank() } ?: "default"
+        }
+    }
+
+    fun selectProvider(provider: String, appendConfirmationStep: Boolean = true) {
+        val normalized = when (provider.trim().lowercase()) {
+            "claude", "claude-code" -> "claude"
+            "cursor", "cursor-agent" -> "cursor"
+            else -> "antigravity"
+        }
+        val providerLabel = when (normalized) {
+            "claude" -> "Claude Code CLI"
+            "cursor" -> "Cursor Agent CLI"
+            else -> "Google Antigravity"
+        }
+        val defaultModel = getDefaultConfiguredModelId(normalized)
+        _uiState.update { state ->
+            val updatedSteps = state.steps.toMutableList()
+            if (appendConfirmationStep) {
+                updatedSteps.add(
+                    TrajectoryStep(
+                        case = "text",
+                        value = "**Active AI provider set to:** `$providerLabel` (`$normalized`)",
+                        stepIndex = -1
+                    )
+                )
+            }
+            state.copy(
+                activeProvider = normalized,
+                selectedModel = defaultModel,
+                conversationModel = if (defaultModel == "default") "" else defaultModel,
+                showProviderPickerDialog = false,
+                steps = updatedSteps,
+                isGenerating = false
+            )
+        }
     }
 
     fun selectModelOption(modelId: String, appendConfirmationStep: Boolean = true) {
         val normalized = modelId.trim().ifBlank { "default" }
-        val option = AVAILABLE_MODEL_OPTIONS.find {
+        val allOptions = AVAILABLE_MODEL_OPTIONS + CLAUDE_MODEL_OPTIONS + CURSOR_MODEL_OPTIONS
+        val option = allOptions.find {
             it.id.equals(normalized, ignoreCase = true) ||
                 it.label.equals(normalized, ignoreCase = true)
         }
@@ -1159,6 +1246,26 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(pendingOpenSettingsTab = true) }
                 return
             }
+            if (cmdLower == "/claude") {
+                selectProvider("claude", appendConfirmationStep = true)
+                return
+            }
+            if (cmdLower == "/cursor") {
+                selectProvider("cursor", appendConfirmationStep = true)
+                return
+            }
+            if (cmdLower == "/agy" || cmdLower == "/antigravity") {
+                selectProvider("antigravity", appendConfirmationStep = true)
+                return
+            }
+            if (cmdLower == "/provider") {
+                if (cmdArg.isBlank()) {
+                    setShowProviderPickerDialog(true)
+                } else {
+                    selectProvider(cmdArg, appendConfirmationStep = true)
+                }
+                return
+            }
             if (cmdLower == "/model") {
                 if (cmdArg.isBlank()) {
                     setShowModelPickerDialog(true)
@@ -1176,10 +1283,28 @@ class ChatViewModel @Inject constructor(
 
         val textToSend = text.ifBlank { "Attached an image." }
         val targetConversationId = _uiState.value.conversationId ?: "new"
-        val configuredDefault = getDefaultConfiguredModelId()
+        val existingSource = if (targetConversationId != "new") {
+            richSummaryMap[targetConversationId]?.source?.trim()?.lowercase() ?: ""
+        } else {
+            ""
+        }
+        val effectiveProvider = when {
+            existingSource == "claude" -> "claude"
+            existingSource == "cursor" -> "cursor"
+            existingSource in listOf("cli", "ide") -> "antigravity"
+            else -> _uiState.value.activeProvider
+        }
+        val configuredDefault = getDefaultConfiguredModelId(effectiveProvider)
         val modelToSend = _uiState.value.selectedModel.takeIf { it.isNotBlank() && it != "default" }
             ?: configuredDefault
-        val sourceToSend = richSummaryMap[targetConversationId]?.source ?: ""
+        val sourceToSend = when {
+            existingSource.isNotBlank() -> existingSource
+            effectiveProvider == "claude" -> "claude"
+            effectiveProvider == "cursor" -> "cursor"
+            else -> "cli"
+        }
+        val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE)
+        val autoApprove = prefs?.getBoolean("auto_approve_mobile_tools", true) ?: true
         
         // Optimistically add user step
         _uiState.update { state ->
@@ -1222,6 +1347,7 @@ class ChatViewModel @Inject constructor(
                             conversationId = targetConversationId,
                             model = modelToSend,
                             source = sourceToSend,
+                            autoApprove = autoApprove,
                             agentId = activeAgentId
                         ))
                         
@@ -1247,6 +1373,7 @@ class ChatViewModel @Inject constructor(
                 conversationId = targetConversationId,
                 model = modelToSend,
                 source = sourceToSend,
+                autoApprove = autoApprove,
                 agentId = activeAgentId
             ))
         }
@@ -1257,20 +1384,23 @@ class ChatViewModel @Inject constructor(
         lastStepIndex = -1
         pendingFullRefresh = false
         pendingFocusIsTranscriptStepIndex = false
-        val defaultModel = getDefaultConfiguredModelId()
+        val defaultProv = getDefaultConfiguredProvider()
+        val defaultModel = getDefaultConfiguredModelId(defaultProv)
         _uiState.update {
             it.copy(
                 steps = emptyList(),
                 conversationId = "new",
                 isGenerating = false,
                 error = null,
+                activeProvider = defaultProv,
                 selectedModel = defaultModel,
                 conversationModel = if (defaultModel == "default") "" else defaultModel,
                 focusedOriginalStepIndex = null,
                 pendingFocusStepIndex = null,
                 showConversationPickerSheet = false,
                 showPromptsSheet = false,
-                showModelPickerDialog = false
+                showModelPickerDialog = false,
+                showProviderPickerDialog = false
             )
         }
         val agentId = _uiState.value.activeAgentId ?: "antigravity"
@@ -1320,6 +1450,12 @@ class ChatViewModel @Inject constructor(
             }
 
             val convModel = richSummaryMap[id]?.model ?: ""
+            val convSource = richSummaryMap[id]?.source?.trim()?.lowercase() ?: ""
+            val inferredProvider = when (convSource) {
+                "claude" -> "claude"
+                "cursor" -> "cursor"
+                else -> "antigravity"
+            }
 
             _uiState.update {
                 it.copy(
@@ -1327,6 +1463,7 @@ class ChatViewModel @Inject constructor(
                     conversationId = id,
                     isGenerating = false,
                     error = null,
+                    activeProvider = inferredProvider,
                     selectedModel = "default",
                     conversationModel = convModel,
                     showConversationPickerSheet = false,

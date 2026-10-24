@@ -151,6 +151,7 @@ sealed class OutboundMessage {
         val conversationId: String? = null,
         val model: String = "default",
         val source: String = "",
+        val autoApprove: Boolean = true,
         val type: String = "SEND_MESSAGE",
         override val id: String? = null,
         override val agentId: String? = null

@@ -388,6 +388,9 @@ fun ChatScreen(
                     onRefresh = {
                         viewModel.refreshHistory()
                     },
+                    onToggleOlderSessions = { show ->
+                        viewModel.setShowOlderSessions(show)
+                    },
                     onSelectConversation = { cid ->
                         onSubscribeConversation(cid)
                         scope.launch { drawerState.close() }
@@ -457,16 +460,23 @@ fun ChatScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             if (isNewChat) {
+                                val (provBadgeText, provBg, provFg) = when (uiState.activeProvider.lowercase()) {
+                                    "claude" -> Triple("CLAUDE", Color(0xFF7C2D12), Color(0xFFFDBA74))
+                                    "cursor" -> Triple("CURSOR", Color(0xFF064E3B), Color(0xFF6EE7B7))
+                                    else -> Triple("AGY", Color(0xFF083344), Color(0xFF38BDF8))
+                                }
                                 Row(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    MiniTagBadge(
-                                        text = "AGY",
-                                        bgColor = Color(0xFF083344),
-                                        textColor = Color(0xFF38BDF8)
-                                    )
+                                    Box(modifier = Modifier.clickable { viewModel.setShowProviderPickerDialog(true) }) {
+                                        MiniTagBadge(
+                                            text = provBadgeText,
+                                            bgColor = provBg,
+                                            textColor = provFg
+                                        )
+                                    }
                                     Text(
                                         text = "Select or Start Chat ▾",
                                         style = MaterialTheme.typography.bodySmall,
@@ -477,7 +487,13 @@ fun ChatScreen(
                                     )
                                 }
                             } else {
-                                val srcBadge = activeConversationSummary?.source?.ifBlank { "CLI" } ?: "CLI"
+                                val rawSrc = activeConversationSummary?.source?.ifBlank { "CLI" } ?: "CLI"
+                                val (srcBadge, srcBg, srcFg) = when (rawSrc.lowercase()) {
+                                    "claude" -> Triple("CLAUDE", Color(0xFF7C2D12), Color(0xFFFDBA74))
+                                    "cursor" -> Triple("CURSOR", Color(0xFF064E3B), Color(0xFF6EE7B7))
+                                    "ide" -> Triple("IDE", Color(0xFF312E81), Color(0xFFC7D2FE))
+                                    else -> Triple("AGY", Color(0xFF083344), Color(0xFF38BDF8))
+                                }
                                 val wsName = activeConversationSummary?.workspace ?: ""
                                 val openInAgy = activeConversationSummary?.openInTerminal == true
                                 val modelLabel = formatCompactModelLabel(
@@ -499,8 +515,8 @@ fun ChatScreen(
                                     ) {
                                         MiniTagBadge(
                                             text = srcBadge,
-                                            bgColor = Color(0xFF312E81),
-                                            textColor = Color(0xFFC7D2FE)
+                                            bgColor = srcBg,
+                                            textColor = srcFg
                                         )
                                         if (wsName.isNotBlank()) {
                                             MiniTagBadge(
@@ -710,6 +726,7 @@ fun ChatScreen(
                         onSearchQueryChange = { q -> onSearchHistory(q) },
                         onWorkspaceFilterChange = { ws -> viewModel.setWorkspaceFilter(ws) },
                         onRefresh = { viewModel.refreshHistory() },
+                        onToggleOlderSessions = { show -> viewModel.setShowOlderSessions(show) },
                         onSelectConversation = { cid -> onSubscribeConversation(cid) },
                         onSelectConversationAndFocusPrompt = { cid, stepIdx ->
                             viewModel.selectConversationAndFocusPrompt(cid, stepIdx)
@@ -1048,6 +1065,7 @@ fun ChatScreen(
                             onSearchQueryChange = { q -> onSearchHistory(q) },
                             onWorkspaceFilterChange = { ws -> viewModel.setWorkspaceFilter(ws) },
                             onRefresh = { viewModel.refreshHistory() },
+                            onToggleOlderSessions = { show -> viewModel.setShowOlderSessions(show) },
                             onSelectConversation = { cid ->
                                 viewModel.setShowConversationPickerSheet(false)
                                 onSubscribeConversation(cid)
@@ -1183,6 +1201,11 @@ fun ChatScreen(
             }
 
             if (uiState.showModelPickerDialog) {
+                val activeOptions = when (uiState.activeProvider.lowercase()) {
+                    "claude" -> CLAUDE_MODEL_OPTIONS
+                    "cursor" -> CURSOR_MODEL_OPTIONS
+                    else -> AVAILABLE_MODEL_OPTIONS
+                }
                 AlertDialog(
                     onDismissRequest = { viewModel.setShowModelPickerDialog(false) },
                     title = {
@@ -1199,9 +1222,9 @@ fun ChatScreen(
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            AVAILABLE_MODEL_OPTIONS.forEach { option ->
+                            activeOptions.forEach { option ->
                                 val isSelected = uiState.selectedModel.equals(option.id, ignoreCase = true) ||
-                                    (uiState.selectedModel == "default" && option.id == "default")
+                                    (uiState.selectedModel == "default" && option.id == activeOptions.first().id)
                                 Surface(
                                     onClick = {
                                         viewModel.selectModelOption(option.id, appendConfirmationStep = true)
@@ -1252,6 +1275,79 @@ fun ChatScreen(
                     }
                 )
             }
+
+            if (uiState.showProviderPickerDialog) {
+                val providerOptions = listOf(
+                    Triple("antigravity", "Google Antigravity (agy)", "Gemini 4 Argon & Antigravity IDE/CLI"),
+                    Triple("claude", "Claude Code CLI (claude)", "Anthropic Claude Sonnet 4.6 & Opus 4.7"),
+                    Triple("cursor", "Cursor Agent CLI (cursor-agent)", "Cursor Agent multi-model CLI")
+                )
+                AlertDialog(
+                    onDismissRequest = { viewModel.setShowProviderPickerDialog(false) },
+                    title = {
+                        Text(
+                            text = "Select AI Provider (/provider)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            providerOptions.forEach { (provId, provLabel, provSub) ->
+                                val isSelected = uiState.activeProvider.equals(provId, ignoreCase = true)
+                                Surface(
+                                    onClick = {
+                                        viewModel.selectProvider(provId, appendConfirmationStep = true)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isSelected) Color(0xFF1E1B4B) else Color(0xFF151722),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF38BDF8) else Color(0xFF2D3348)
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = {
+                                                viewModel.selectProvider(provId, appendConfirmationStep = true)
+                                            }
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = provLabel,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color.White
+                                            )
+                                            Text(
+                                                text = provSub,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFF9CA3AF)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.setShowProviderPickerDialog(false) }) {
+                            Text("Close")
+                        }
+                    }
+                )
+            }
         }
     }
 }
@@ -1283,21 +1379,83 @@ fun ConversationBrowserPanel(
     onSearchQueryChange: (String) -> Unit,
     onWorkspaceFilterChange: (String) -> Unit,
     onRefresh: () -> Unit,
+    onToggleOlderSessions: (Boolean) -> Unit = {},
     onSelectConversation: (String) -> Unit,
     onSelectConversationAndFocusPrompt: (String, Int?) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val displayConversations = remember(
+    val context = LocalContext.current
+    val prefs = remember(context) {
+        context.getSharedPreferences("aimon_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    var agyEnabled by remember { mutableStateOf(prefs.getBoolean("antigravity_sessions_enabled", true)) }
+    var claudeEnabled by remember { mutableStateOf(prefs.getBoolean("claude_sessions_enabled", true)) }
+    var cursorEnabled by remember { mutableStateOf(prefs.getBoolean("cursor_sessions_enabled", true)) }
+    var cutoffHours by remember { mutableStateOf(prefs.getInt("session_cutoff_hours", 24).coerceIn(1, 168)) }
+
+    DisposableEffect(prefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { sp, _ ->
+            agyEnabled = sp.getBoolean("antigravity_sessions_enabled", true)
+            claudeEnabled = sp.getBoolean("claude_sessions_enabled", true)
+            cursorEnabled = sp.getBoolean("cursor_sessions_enabled", true)
+            cutoffHours = sp.getInt("session_cutoff_hours", 24).coerceIn(1, 168)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose {
+            prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        }
+    }
+
+    val rawDisplayConversations = remember(
         uiState.searchQuery,
         uiState.selectedWorkspaceFilter,
         uiState.filteredHistory,
         uiState.searchResults,
-        uiState.history
+        uiState.history,
+        agyEnabled,
+        claudeEnabled,
+        cursorEnabled
     ) {
-        if (uiState.searchQuery.isNotBlank() || uiState.selectedWorkspaceFilter != "ALL") {
+        val baseList = if (uiState.searchQuery.isNotBlank() || uiState.selectedWorkspaceFilter != "ALL") {
             uiState.filteredHistory
         } else {
             uiState.filteredHistory.ifEmpty { uiState.searchResults ?: uiState.history }
+        }
+        // Filter by enabled providers and sort strictly in descending order of last activity
+        baseList
+            .filter { conv ->
+                when (conv.source.trim().lowercase()) {
+                    "claude" -> claudeEnabled
+                    "cursor" -> cursorEnabled
+                    else -> agyEnabled
+                }
+            }
+            .sortedByDescending { normalizeConversationTimestampMs(it.timestamp) }
+    }
+
+    val nowMs = System.currentTimeMillis()
+    val cutoffWindowMs = cutoffHours.toLong() * 3600_000L
+    val isSearchMode = uiState.searchQuery.isNotBlank()
+
+    val recentConversations = remember(rawDisplayConversations, cutoffWindowMs, isSearchMode, nowMs) {
+        if (isSearchMode) {
+            rawDisplayConversations
+        } else {
+            rawDisplayConversations.filter { conv ->
+                val tsMs = normalizeConversationTimestampMs(conv.timestamp)
+                tsMs <= 0L || (nowMs - tsMs) <= cutoffWindowMs
+            }
+        }
+    }
+
+    val olderConversations = remember(rawDisplayConversations, cutoffWindowMs, isSearchMode, nowMs) {
+        if (isSearchMode) {
+            emptyList()
+        } else {
+            rawDisplayConversations.filter { conv ->
+                val tsMs = normalizeConversationTimestampMs(conv.timestamp)
+                tsMs > 0L && (nowMs - tsMs) > cutoffWindowMs
+            }
         }
     }
 
@@ -1330,7 +1488,7 @@ fun ConversationBrowserPanel(
             }
         }
 
-        // Workspace & status filter chips
+        // Provider, workspace & status filter chips
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1342,13 +1500,37 @@ fun ConversationBrowserPanel(
             FilterChip(
                 selected = uiState.selectedWorkspaceFilter == "ALL",
                 onClick = { onWorkspaceFilterChange("ALL") },
-                label = { Text("All (${uiState.history.size})") }
+                label = { Text("All (${recentConversations.size})") }
             )
+            if (agyEnabled) {
+                val agyCount = uiState.history.count { it.source.trim().lowercase() in listOf("cli", "ide", "") }
+                FilterChip(
+                    selected = uiState.selectedWorkspaceFilter == "AGY",
+                    onClick = { onWorkspaceFilterChange("AGY") },
+                    label = { Text("AGY ($agyCount)") }
+                )
+            }
+            if (claudeEnabled) {
+                val claudeCount = uiState.history.count { it.source.equals("claude", ignoreCase = true) }
+                FilterChip(
+                    selected = uiState.selectedWorkspaceFilter == "CLAUDE",
+                    onClick = { onWorkspaceFilterChange("CLAUDE") },
+                    label = { Text("Claude ($claudeCount)") }
+                )
+            }
+            if (cursorEnabled) {
+                val cursorCount = uiState.history.count { it.source.equals("cursor", ignoreCase = true) }
+                FilterChip(
+                    selected = uiState.selectedWorkspaceFilter == "CURSOR",
+                    onClick = { onWorkspaceFilterChange("CURSOR") },
+                    label = { Text("Cursor ($cursorCount)") }
+                )
+            }
             val openCount = uiState.history.count { it.openInTerminal || it.active }
             FilterChip(
                 selected = uiState.selectedWorkspaceFilter == "OPEN_AGY",
                 onClick = { onWorkspaceFilterChange("OPEN_AGY") },
-                label = { Text("Open in agy ($openCount)") }
+                label = { Text("Open ($openCount)") }
             )
             uiState.availableWorkspaces.forEach { ws ->
                 FilterChip(
@@ -1361,7 +1543,7 @@ fun ConversationBrowserPanel(
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-        if (displayConversations.isEmpty()) {
+        if (rawDisplayConversations.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1387,9 +1569,20 @@ fun ConversationBrowserPanel(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (recentConversations.isEmpty() && olderConversations.isNotEmpty() && !uiState.showOlderSessions) {
+                    item(key = "empty_recent_notice") {
+                        Text(
+                            text = "No sessions active within the last ${cutoffHours}h.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
                 itemsIndexed(
-                    items = displayConversations,
-                    key = { idx, conv -> "conv_card_${idx}_${conv.id}" }
+                    items = recentConversations,
+                    key = { idx, conv -> "conv_recent_${idx}_${conv.id}" }
                 ) { _, conv ->
                     ConversationRichCard(
                         conv = conv,
@@ -1399,6 +1592,58 @@ fun ConversationBrowserPanel(
                             onSelectConversationAndFocusPrompt(conv.id, stepIdx)
                         }
                     )
+                }
+
+                if (olderConversations.isNotEmpty()) {
+                    item(key = "older_sessions_toggle_card") {
+                        Surface(
+                            onClick = { onToggleOlderSessions(!uiState.showOlderSessions) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFF121622),
+                            border = BorderStroke(1.dp, Color(0xFF2E364F)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (uiState.showOlderSessions) {
+                                        "Hide ${olderConversations.size} older sessions (> ${cutoffHours}h ago)"
+                                    } else {
+                                        "Show ${olderConversations.size} older sessions (> ${cutoffHours}h ago)"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF38BDF8)
+                                )
+                                Text(
+                                    text = if (uiState.showOlderSessions) "▴" else "▾",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color(0xFF38BDF8)
+                                )
+                            }
+                        }
+                    }
+
+                    if (uiState.showOlderSessions) {
+                        itemsIndexed(
+                            items = olderConversations,
+                            key = { idx, conv -> "conv_older_${idx}_${conv.id}" }
+                        ) { _, conv ->
+                            ConversationRichCard(
+                                conv = conv,
+                                isSelected = conv.id == uiState.conversationId,
+                                onOpenConversation = { onSelectConversation(conv.id) },
+                                onFocusPrompt = { stepIdx ->
+                                    onSelectConversationAndFocusPrompt(conv.id, stepIdx)
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1452,10 +1697,16 @@ fun ConversationRichCard(
                         textColor = Color(0xFF34D399)
                     )
                 }
+                val (cardSrcText, cardSrcBg, cardSrcFg) = when (conv.source.trim().lowercase()) {
+                    "claude" -> Triple("CLAUDE", Color(0xFF7C2D12), Color(0xFFFDBA74))
+                    "cursor" -> Triple("CURSOR", Color(0xFF064E3B), Color(0xFF6EE7B7))
+                    "ide" -> Triple("IDE", Color(0xFF312E81), Color(0xFFC7D2FE))
+                    else -> Triple("AGY", Color(0xFF083344), Color(0xFF38BDF8))
+                }
                 MiniTagBadge(
-                    text = conv.source.ifBlank { "CLI" },
-                    bgColor = Color(0xFF312E81),
-                    textColor = Color(0xFFC7D2FE)
+                    text = cardSrcText,
+                    bgColor = cardSrcBg,
+                    textColor = cardSrcFg
                 )
                 if (conv.workspace.isNotBlank()) {
                     MiniTagBadge(

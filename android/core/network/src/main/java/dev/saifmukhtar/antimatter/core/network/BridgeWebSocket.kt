@@ -438,6 +438,7 @@ class BridgeWebSocket(private val context: Context) {
                                 "prompt" to message.text,
                                 "conversationId" to reqCid,
                                 "agentId" to (message.agentId ?: "antigravity"),
+                                "autoApprove" to message.autoApprove,
                                 "images" to (message.images ?: emptyList<String>())
                             )
                             if (message.model.isNotBlank()) {

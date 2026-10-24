@@ -39,38 +39,66 @@ object AimonSoundPlayer {
     )
 
     /**
-     * Plays the Antigravity IDE prompt-answered chime:
-     * Ascending C5 -> G5 -> C6 harmonic triad progression voiced for mobile speakers.
+     * Plays the provider-distinct prompt-answered chime:
+     * - Antigravity ("cli" / "ide"): Ascending C5 -> G5 -> C6 harmonic triad progression
+     * - Claude Code ("claude"): Warm D-major9 acoustic bell progression (D5-F#5-A5 -> A5-C#6-E6 -> D5-A5-D6-F#6)
+     * - Cursor ("cursor"): Crisp E-minor7 -> A-major -> E-major9 synth-marimba arpeggio
      */
-    fun playPromptAnsweredChime(context: Context? = null) {
+    fun playPromptAnsweredChime(context: Context? = null, source: String = "cli") {
         val appCtx = context?.applicationContext
+        val src = source.trim().lowercase()
         soundScope.launch {
-            val steps = listOf(
-                // C5 - E5 - G5
-                ChordStep(doubleArrayOf(523.25, 659.25, 783.99), startMs = 0, durationMs = 170, gain = 0.80),
-                // G5 - B5 - D6
-                ChordStep(doubleArrayOf(783.99, 987.77, 1174.66), startMs = 125, durationMs = 180, gain = 0.85),
-                // C5 - G5 - E6 - C6 (warm resonant resolution)
-                ChordStep(doubleArrayOf(523.25, 783.99, 1046.50, 1318.51), startMs = 250, durationMs = 340, gain = 0.95)
-            )
-            playSynthesizedSequence(appCtx, steps, totalDurationMs = 600)
+            val steps = when (src) {
+                "claude" -> listOf(
+                    ChordStep(doubleArrayOf(587.33, 739.99, 880.00), startMs = 0, durationMs = 180, gain = 0.82),
+                    ChordStep(doubleArrayOf(880.00, 1108.73, 1318.51), startMs = 135, durationMs = 190, gain = 0.86),
+                    ChordStep(doubleArrayOf(587.33, 880.00, 1174.66, 1479.98), startMs = 270, durationMs = 360, gain = 0.95)
+                )
+                "cursor" -> listOf(
+                    ChordStep(doubleArrayOf(659.25, 783.99, 987.77), startMs = 0, durationMs = 140, gain = 0.82),
+                    ChordStep(doubleArrayOf(880.00, 1108.73, 1318.51), startMs = 105, durationMs = 150, gain = 0.88),
+                    ChordStep(doubleArrayOf(659.25, 987.77, 1318.51, 1661.22), startMs = 210, durationMs = 320, gain = 0.95)
+                )
+                else -> listOf(
+                    // C5 - E5 - G5
+                    ChordStep(doubleArrayOf(523.25, 659.25, 783.99), startMs = 0, durationMs = 170, gain = 0.80),
+                    // G5 - B5 - D6
+                    ChordStep(doubleArrayOf(783.99, 987.77, 1174.66), startMs = 125, durationMs = 180, gain = 0.85),
+                    // C5 - G5 - E6 - C6 (warm resonant resolution)
+                    ChordStep(doubleArrayOf(523.25, 783.99, 1046.50, 1318.51), startMs = 250, durationMs = 340, gain = 0.95)
+                )
+            }
+            playSynthesizedSequence(appCtx, steps, totalDurationMs = 640)
         }
     }
 
     /**
-     * Plays the Antigravity IDE agent-question / elicitation chime:
-     * Two-step inquisitive rising F5-A5-C6 -> A5-C6-F6 triad progression.
+     * Plays the provider-distinct agent-question / elicitation chime:
+     * - Antigravity ("cli" / "ide"): Two-step inquisitive rising F5-A5-C6 -> A5-C6-F6 triad
+     * - Claude Code ("claude"): Warm G-major7 rising bell (G5-B5-D6 -> B5-D6-F#6)
+     * - Cursor ("cursor"): Crisp B5-D#6-F#6 -> E6-G#6-B6 synth elicitation chime
      */
-    fun playAgentQuestionChime(context: Context? = null) {
+    fun playAgentQuestionChime(context: Context? = null, source: String = "cli") {
         val appCtx = context?.applicationContext
+        val src = source.trim().lowercase()
         soundScope.launch {
-            val steps = listOf(
-                // F5 - A5 - C6
-                ChordStep(doubleArrayOf(698.46, 880.00, 1046.50), startMs = 0, durationMs = 180, gain = 0.85),
-                // A5 - C6 - F6
-                ChordStep(doubleArrayOf(880.00, 1046.50, 1396.91), startMs = 150, durationMs = 320, gain = 0.95)
-            )
-            playSynthesizedSequence(appCtx, steps, totalDurationMs = 480)
+            val steps = when (src) {
+                "claude" -> listOf(
+                    ChordStep(doubleArrayOf(783.99, 987.77, 1174.66), startMs = 0, durationMs = 185, gain = 0.85),
+                    ChordStep(doubleArrayOf(987.77, 1174.66, 1479.98), startMs = 155, durationMs = 330, gain = 0.95)
+                )
+                "cursor" -> listOf(
+                    ChordStep(doubleArrayOf(987.77, 1244.51, 1479.98), startMs = 0, durationMs = 165, gain = 0.85),
+                    ChordStep(doubleArrayOf(1318.51, 1661.22, 1975.53), startMs = 140, durationMs = 310, gain = 0.95)
+                )
+                else -> listOf(
+                    // F5 - A5 - C6
+                    ChordStep(doubleArrayOf(698.46, 880.00, 1046.50), startMs = 0, durationMs = 180, gain = 0.85),
+                    // A5 - C6 - F6
+                    ChordStep(doubleArrayOf(880.00, 1046.50, 1396.91), startMs = 150, durationMs = 320, gain = 0.95)
+                )
+            }
+            playSynthesizedSequence(appCtx, steps, totalDurationMs = 500)
         }
     }
 

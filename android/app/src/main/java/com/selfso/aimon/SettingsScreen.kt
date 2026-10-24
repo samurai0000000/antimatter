@@ -40,6 +40,8 @@ import com.selfso.selfupdate.UpdateState
 import dev.saifmukhtar.antimatter.BuildConfig
 import dev.saifmukhtar.antimatter.core.ui.utils.LocalCrashHandler
 import dev.saifmukhtar.antimatter.feature.chat.AVAILABLE_MODEL_OPTIONS
+import dev.saifmukhtar.antimatter.feature.chat.CLAUDE_MODEL_OPTIONS
+import dev.saifmukhtar.antimatter.feature.chat.CURSOR_MODEL_OPTIONS
 
 @Composable
 fun SettingsScreen(
@@ -61,6 +63,17 @@ fun SettingsScreen(
     val vibrationEnabled by AimonAppPreferences.vibrationEnabled.collectAsState()
     val defaultModelId by AimonAppPreferences.defaultModelId.collectAsState()
     val biometricLockEnabled by AimonAppPreferences.biometricLockEnabled.collectAsState()
+    val antigravitySessionsEnabled by AimonAppPreferences.antigravitySessionsEnabled.collectAsState()
+    val claudeSessionsEnabled by AimonAppPreferences.claudeSessionsEnabled.collectAsState()
+    val cursorSessionsEnabled by AimonAppPreferences.cursorSessionsEnabled.collectAsState()
+    val antigravityNotificationsEnabled by AimonAppPreferences.antigravityNotificationsEnabled.collectAsState()
+    val claudeNotificationsEnabled by AimonAppPreferences.claudeNotificationsEnabled.collectAsState()
+    val cursorNotificationsEnabled by AimonAppPreferences.cursorNotificationsEnabled.collectAsState()
+    val autoApproveMobileTools by AimonAppPreferences.autoApproveMobileTools.collectAsState()
+    val sessionCutoffHours by AimonAppPreferences.sessionCutoffHours.collectAsState()
+    val defaultProvider by AimonAppPreferences.defaultProvider.collectAsState()
+    val defaultClaudeModelId by AimonAppPreferences.defaultClaudeModelId.collectAsState()
+    val defaultCursorModelId by AimonAppPreferences.defaultCursorModelId.collectAsState()
     val updateState = updateController?.state?.collectAsState()?.value ?: UpdateState.Idle
     var hasCrashLogs by remember { mutableStateOf(LocalCrashHandler.hasUnsentLogs(context)) }
 
@@ -222,6 +235,240 @@ fun SettingsScreen(
                             Text("Test Question Alert", fontSize = 12.sp)
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { AimonSoundPlayer.playPromptAnsweredChime(context, "cli") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("AGY Chime", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { AimonSoundPlayer.playPromptAnsweredChime(context, "claude") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFDBA74)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Claude Chime", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { AimonSoundPlayer.playPromptAnsweredChime(context, "cursor") },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF6EE7B7)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Cursor Chime", fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // 1B. AI Session Providers (Antigravity, Claude Code & Cursor) & Cut-Off
+        // =====================================================================
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(listOf(Color(0xFFF59E0B), Color(0xFF10B981)))
+                ),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(Color(0xFF78350F), shape = CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Memory,
+                                contentDescription = null,
+                                tint = Color(0xFFFDE68A),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "AI Session Providers & Activity Cut-Off",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "Antigravity, Claude Code & Cursor discovery, cut-off window & tool approval",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF9CA3AF)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Recent Session Activity Cut-Off Slider (default 24h, range 1..168h)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Recent Session Cut-Off Window",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
+                        val cutoffLabel = if (sessionCutoffHours % 24 == 0) {
+                            "${sessionCutoffHours}h (${sessionCutoffHours / 24}d)"
+                        } else {
+                            "${sessionCutoffHours}h"
+                        }
+                        Text(
+                            text = cutoffLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF38BDF8)
+                        )
+                    }
+                    Text(
+                        text = "Sessions older than ${sessionCutoffHours}h are hidden from the main list unless expanded",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF9CA3AF)
+                    )
+                    Slider(
+                        value = sessionCutoffHours.toFloat(),
+                        onValueChange = { AimonAppPreferences.setSessionCutoffHours(context, it.toInt()) },
+                        valueRange = 1f..168f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF38BDF8),
+                            activeTrackColor = Color(0xFF38BDF8),
+                            inactiveTrackColor = Color(0xFF1F2937)
+                        )
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(6, 12, 24, 48, 72, 168).forEach { hrs ->
+                            val selected = sessionCutoffHours == hrs
+                            FilterChip(
+                                selected = selected,
+                                onClick = { AimonAppPreferences.setSessionCutoffHours(context, hrs) },
+                                label = {
+                                    Text(
+                                        text = if (hrs == 168) "7d" else "${hrs}h",
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.Memory,
+                        title = "Antigravity Sessions (IDE & agy)",
+                        subtitle = "Show Antigravity IDE and agy CLI sessions in the Chat browser",
+                        checked = antigravitySessionsEnabled,
+                        onCheckedChange = { AimonAppPreferences.setAntigravitySessionsEnabled(context, it) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.Memory,
+                        title = "Claude Code Sessions (claude)",
+                        subtitle = "Discover & resume Claude Code CLI sessions from ~/.claude/projects",
+                        checked = claudeSessionsEnabled,
+                        onCheckedChange = { AimonAppPreferences.setClaudeSessionsEnabled(context, it) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.Memory,
+                        title = "Cursor Agent Sessions (cursor-agent)",
+                        subtitle = "Discover & resume Cursor Agent CLI sessions from ~/.cursor/projects",
+                        checked = cursorSessionsEnabled,
+                        onCheckedChange = { AimonAppPreferences.setCursorSessionsEnabled(context, it) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.NotificationsActive,
+                        title = "Antigravity Session Alerts",
+                        subtitle = "Notify when Antigravity IDE or agy CLI finishes or asks a question",
+                        checked = antigravityNotificationsEnabled,
+                        onCheckedChange = { AimonAppPreferences.setAntigravityNotificationsEnabled(context, it) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.NotificationsActive,
+                        title = "Claude Code Session Alerts",
+                        subtitle = "Notify with warm D-major9 bell chime for Claude Code sessions",
+                        checked = claudeNotificationsEnabled,
+                        onCheckedChange = { AimonAppPreferences.setClaudeNotificationsEnabled(context, it) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.NotificationsActive,
+                        title = "Cursor Agent Session Alerts",
+                        subtitle = "Notify with crisp E-minor7 synth chime for Cursor Agent sessions",
+                        checked = cursorNotificationsEnabled,
+                        onCheckedChange = { AimonAppPreferences.setCursorNotificationsEnabled(context, it) }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.Fingerprint,
+                        title = "Auto-Approve Mobile Tool Execution",
+                        subtitle = "Pass --dangerously-skip-permissions (claude) and -f (cursor-agent) so mobile prompts never hang on local TTY approval",
+                        checked = autoApproveMobileTools,
+                        onCheckedChange = { AimonAppPreferences.setAutoApproveMobileTools(context, it) }
+                    )
                 }
             }
         }
@@ -364,13 +611,13 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "Default AI Model",
+                                text = "Default Provider & AI Models",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
                             )
                             Text(
-                                text = "Used when starting new conversations (or switch anytime with /model)",
+                                text = "Used when starting new conversations (or switch anytime with /provider and /model)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFF9CA3AF)
                             )
@@ -378,6 +625,39 @@ fun SettingsScreen(
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = "Default New-Chat Provider",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            "antigravity" to "Antigravity",
+                            "claude" to "Claude Code",
+                            "cursor" to "Cursor"
+                        ).forEach { (provKey, provTitle) ->
+                            FilterChip(
+                                selected = defaultProvider.equals(provKey, ignoreCase = true),
+                                onClick = { AimonAppPreferences.setDefaultProvider(context, provKey) },
+                                label = { Text(provTitle, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Antigravity Default Model",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color(0xFFA5B4FC),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
 
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         AVAILABLE_MODEL_OPTIONS.forEach { option ->
@@ -424,6 +704,48 @@ fun SettingsScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Claude Code Default Model",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color(0xFFFDBA74),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CLAUDE_MODEL_OPTIONS.forEach { option ->
+                            FilterChip(
+                                selected = defaultClaudeModelId.equals(option.id, ignoreCase = true),
+                                onClick = { AimonAppPreferences.setDefaultClaudeModelId(context, option.id) },
+                                label = { Text(option.label.removePrefix("Claude "), fontSize = 11.sp) }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Cursor Agent Default Model",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color(0xFF6EE7B7),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        CURSOR_MODEL_OPTIONS.take(3).forEach { option ->
+                            FilterChip(
+                                selected = defaultCursorModelId.equals(option.id, ignoreCase = true),
+                                onClick = { AimonAppPreferences.setDefaultCursorModelId(context, option.id) },
+                                label = { Text(option.id, fontSize = 11.sp) }
+                            )
                         }
                     }
                 }
