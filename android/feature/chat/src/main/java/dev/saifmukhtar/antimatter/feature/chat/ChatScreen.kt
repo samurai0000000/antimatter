@@ -487,7 +487,7 @@ fun ChatScreen(
                             if (isNewChat) {
                                 val (provBadgeText, provBg, provFg) = when (uiState.activeProvider.lowercase()) {
                                     "claude" -> Triple("CLAUDE", Color(0xFF7C2D12), Color(0xFFFDBA74))
-                                    "cursor" -> Triple("CURSOR", Color(0xFF064E3B), Color(0xFF6EE7B7))
+                                    "cursor" -> Triple("CURSOR", Color(0xFF831843), Color(0xFFD8B4FE))
                                     else -> Triple("AGY", Color(0xFF083344), Color(0xFF38BDF8))
                                 }
                                 Row(
@@ -517,7 +517,7 @@ fun ChatScreen(
                                     ?: uiState.activeProvider.ifBlank { "CLI" }
                                 val (srcBadge, srcBg, srcFg) = when (rawSrc.lowercase()) {
                                     "claude" -> Triple("CLAUDE", Color(0xFF7C2D12), Color(0xFFFDBA74))
-                                    "cursor" -> Triple("CURSOR", Color(0xFF064E3B), Color(0xFF6EE7B7))
+                                    "cursor" -> Triple("CURSOR", Color(0xFF831843), Color(0xFFD8B4FE))
                                     "ide" -> Triple("IDE", Color(0xFF312E81), Color(0xFFC7D2FE))
                                     else -> Triple("AGY", Color(0xFF083344), Color(0xFF38BDF8))
                                 }
@@ -1736,7 +1736,7 @@ fun ConversationRichCard(
                 }
                 val (cardSrcText, cardSrcBg, cardSrcFg) = when (conv.source.trim().lowercase()) {
                     "claude" -> Triple("CLAUDE", Color(0xFF7C2D12), Color(0xFFFDBA74))
-                    "cursor" -> Triple("CURSOR", Color(0xFF064E3B), Color(0xFF6EE7B7))
+                    "cursor" -> Triple("CURSOR", Color(0xFF831843), Color(0xFFD8B4FE))
                     "ide" -> Triple("IDE", Color(0xFF312E81), Color(0xFFC7D2FE))
                     else -> Triple("AGY", Color(0xFF083344), Color(0xFF38BDF8))
                 }

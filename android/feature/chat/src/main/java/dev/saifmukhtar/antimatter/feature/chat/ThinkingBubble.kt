@@ -63,6 +63,7 @@ fun ThoughtGroupBubble(
     // so the latest green tool box is visible; once real chat output arrives (isCompleted == true),
     // automatically collapse the entire group into a single summary bar.
     var groupExpanded by remember(isCompleted) { mutableStateOf(!isCompleted) }
+    var showAllSteps by remember(steps.size, isCompleted) { mutableStateOf(false) }
 
     // Track per-step manual expand/collapse overrides. Reset when steps.size or isCompleted changes
     // so a newly arriving green tool call automatically collapses the previous one.
@@ -172,7 +173,34 @@ fun ThoughtGroupBubble(
                         .padding(top = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    steps.forEachIndexed { idx, step ->
+                    val maxInitialVisibleSteps = 6
+                    val tailVisibleSteps = 4
+                    if (steps.size > maxInitialVisibleSteps && !showAllSteps) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1E1F29))
+                                .clickable { showAllSteps = true }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "… ${steps.size - tailVisibleSteps} earlier steps hidden — tap to show all",
+                                color = Color(0xFF9CA3AF),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+
+                    val startIndex = if (steps.size > maxInitialVisibleSteps && !showAllSteps) {
+                        steps.size - tailVisibleSteps
+                    } else {
+                        0
+                    }
+
+                    for (idx in startIndex until steps.size) {
+                        val step = steps[idx]
                         val defaultExpanded = !isCompleted && (step.stepCase == StepCase.TOOL_CALL && idx == latestToolIndex)
                         val isStepExpanded = manualStepExpanded[idx] ?: defaultExpanded
 

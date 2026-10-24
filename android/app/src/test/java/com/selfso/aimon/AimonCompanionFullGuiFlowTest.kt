@@ -11,6 +11,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.selfso.selfupdate.ApkDownloader
 import com.selfso.selfupdate.SelfUpdateChecker
@@ -30,8 +32,10 @@ import dev.saifmukhtar.antimatter.core.network.StepCase
 import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
 import dev.saifmukhtar.antimatter.feature.chat.ChatItem
 import dev.saifmukhtar.antimatter.feature.chat.ChatViewModel
+import dev.saifmukhtar.antimatter.feature.chat.SpeechDictationSession
 import dev.saifmukhtar.antimatter.feature.chat.computeMaxPromptInputHeightDp
 import dev.saifmukhtar.antimatter.feature.chat.groupSteps
+import dev.saifmukhtar.antimatter.feature.chat.mergeDictatedText
 import dev.saifmukhtar.antimatter.feature.chat.placeholderForProvider
 import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalog
 import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalogForProvider
@@ -816,29 +820,26 @@ class AimonCompanionFullGuiFlowTest {
         chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
         chatVm.fetchTranscript("conv-antigravity-001", since = -1)
 
-        waitUntil { chatVm.uiState.value.steps.size >= 4 }
+        waitUntil { chatVm.uiState.value.steps.size >= 3 }
         val steps = chatVm.uiState.value.steps
 
         // Step 0: userInput
         assertEquals("userInput", steps[0].case)
         assertEquals("Run the Android companion tests", steps[0].value)
 
-        // Step 1a: plannerResponse (thinking)
+        // Step 1a: plannerResponse (combined thinking + transitional thought)
         assertEquals("plannerResponse", steps[1].case)
-        assertEquals("Checking test runner configuration", steps[1].thinking)
+        assertTrue(steps[1].thinking?.contains("Checking test runner configuration") == true)
+        assertTrue(steps[1].thinking?.contains("Executing Gradle test task now.") == true)
 
         // Step 1b: toolCall
         assertEquals("toolCall", steps[2].case)
         assertEquals("run_command", steps[2].tool)
         assertEquals("./gradlew testDebugUnitTest", steps[2].command)
 
-        // Step 1c: text
-        assertEquals("text", steps[3].case)
-        assertEquals("Executing Gradle test task now.", steps[3].value)
-
         // Incremental polling with since=1
         chatVm.fetchTranscript("conv-antigravity-001", since = 1)
-        waitUntil { chatVm.uiState.value.steps.size >= 6 }
+        waitUntil { chatVm.uiState.value.steps.size >= 5 }
 
         val updatedSteps = chatVm.uiState.value.steps
         assertTrue("Incremental poll must append new plannerResponse", updatedSteps.any { it.thinking == "Verifying incremental step 2" })
@@ -1685,6 +1686,120 @@ class AimonCompanionFullGuiFlowTest {
         val firstResp = qRespArr[0].asJsonObject
         assertEquals("Which storage backend?", firstResp.get("question").asString)
         assertEquals("(Recommended) SQLite", firstResp.getAsJsonArray("selectedOptions")[0].asString)
+    }
+
+    @Test
+    fun testSpeechToTextDictationAndCursorToolTurnGrouping() {
+        // 1. Verify mergeDictatedText pure helper
+        assertEquals("Check the cursor", mergeDictatedText("Check", "the cursor"))
+        assertEquals("the cursor", mergeDictatedText("", "the cursor"))
+        assertEquals("Check", mergeDictatedText("Check", ""))
+        assertEquals("Check the cursor", mergeDictatedText("Check ", " the cursor "))
+
+        // Verify SpeechDictationSession state machine
+        var currentText = "Check"
+        var restartCount = 0
+        val session = SpeechDictationSession(
+            onTextUpdated = { newText -> currentText = newText },
+            onRestartRecognizer = { restartCount++ }
+        )
+
+        // Starting dictation with existing text "Check"
+        session.startSession(currentText)
+        assertTrue("Session must be listening after startSession", session.isListening)
+        assertTrue("userRequestedListening must be true", session.userRequestedListening)
+        assertEquals("Check", session.committedPrefix)
+
+        // Streaming partial results
+        session.onPartialRecognition("the cursor")
+        assertEquals("Check the cursor", currentText)
+        session.onPartialRecognition("the cursor session")
+        assertEquals("Check the cursor session", currentText)
+
+        // onFinalRecognition commits utterance, keeps isListening true, triggers onRestartRecognizer
+        session.onFinalRecognition("the cursor session")
+        assertEquals("Check the cursor session", session.committedPrefix)
+        assertEquals("Check the cursor session", currentText)
+        assertTrue("Session must remain listening for continuous dictation across pauses", session.isListening)
+        assertEquals("onRestartRecognizer must be triggered on final utterance", 1, restartCount)
+
+        // Streaming next sentence
+        session.onPartialRecognition("and fix the freeze")
+        assertEquals("Check the cursor session and fix the freeze", currentText)
+        session.onFinalRecognition("and fix the freeze")
+        assertEquals("Check the cursor session and fix the freeze", session.committedPrefix)
+        assertEquals("Check the cursor session and fix the freeze", currentText)
+        assertTrue(session.isListening)
+        assertEquals(2, restartCount)
+
+        // Second tap: stopSession
+        session.stopSession()
+        assertFalse("Session must stop listening after stopSession", session.isListening)
+        assertFalse("userRequestedListening must be false", session.userRequestedListening)
+        assertEquals("Check the cursor session and fix the freeze", currentText)
+        assertEquals("Check the cursor session and fix the freeze", session.committedPrefix)
+
+        // 2. Verify BridgeWebSocket.parseTranscriptStepsFromJson and groupSteps on 20 tool-calling turns + final text turn
+        val transcriptJson = JsonObject()
+        val stepsArray = JsonArray()
+
+        for (i in 1..20) {
+            val turn = JsonObject()
+            turn.addProperty("stepIndex", i)
+            turn.addProperty("type", "PLANNER_RESPONSE")
+            turn.addProperty("text", "Intermediate thought $i")
+            val tcArr = JsonArray()
+            val tc = JsonObject()
+            tc.addProperty("name", "Shell")
+            tc.addProperty("command", "git status $i")
+            tcArr.add(tc)
+            turn.add("tool_calls", tcArr)
+            stepsArray.add(turn)
+        }
+
+        val finalTurn = JsonObject()
+        finalTurn.addProperty("stepIndex", 21)
+        finalTurn.addProperty("type", "PLANNER_RESPONSE")
+        finalTurn.addProperty("text", "Done!")
+        stepsArray.add(finalTurn)
+
+        transcriptJson.add("steps", stepsArray)
+
+        val inboundSteps = BridgeWebSocket.parseTranscriptStepsFromJson(transcriptJson, "cursor")
+        assertEquals(41, inboundSteps.size) // 20 thoughts + 20 tool calls + 1 final text
+
+        // Verify every intermediate text accompanying tool_calls is emitted as PLANNER_RESPONSE before its TOOL_CALL
+        for (i in 0 until 20) {
+            val thoughtStep = inboundSteps[i * 2].step
+            val toolStep = inboundSteps[i * 2 + 1].step
+            assertEquals(StepCase.PLANNER_RESPONSE, thoughtStep.stepCase)
+            assertEquals("Intermediate thought ${i + 1}", thoughtStep.value)
+            assertEquals(StepCase.TOOL_CALL, toolStep.stepCase)
+            assertEquals("Shell", toolStep.tool)
+            assertEquals("git status ${i + 1}", toolStep.command)
+        }
+
+        // Verify final turn is emitted as TEXT
+        val finalStep = inboundSteps[40].step
+        assertEquals(StepCase.TEXT, finalStep.stepCase)
+        assertEquals("Done!", finalStep.value)
+
+        // Verify groupSteps collapses all 20 intermediate thoughts + 20 tool calls into a SINGLE ThoughtGroup
+        val trajectorySteps = inboundSteps.map { it.step }
+        val chatItems = groupSteps(trajectorySteps)
+
+        assertEquals("Must produce exactly 1 ThoughtGroup followed by 1 SingleStep", 2, chatItems.size)
+        assertTrue("First item must be ThoughtGroup", chatItems[0] is ChatItem.ThoughtGroup)
+        val thoughtGroup = chatItems[0] as ChatItem.ThoughtGroup
+        assertTrue("ThoughtGroup must be completed", thoughtGroup.isCompleted)
+        assertEquals(40, thoughtGroup.steps.size)
+        assertEquals(20, thoughtGroup.thoughtCount)
+        assertEquals(20, thoughtGroup.toolCallCount)
+
+        assertTrue("Second item must be SingleStep", chatItems[1] is ChatItem.SingleStep)
+        val singleStep = chatItems[1] as ChatItem.SingleStep
+        assertEquals(StepCase.TEXT, singleStep.step.stepCase)
+        assertEquals("Done!", singleStep.step.displayText)
     }
 }
 

@@ -42,8 +42,8 @@ class AimonCompanionLiveLifecycleTest {
 
     private val httpClient = OkHttpClient.Builder()
         .proxy(Proxy.NO_PROXY)
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
     private val gson = Gson()
     private val baseUrl = "http://127.0.0.1:3883"

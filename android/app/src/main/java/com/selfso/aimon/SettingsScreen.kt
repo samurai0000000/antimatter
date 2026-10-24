@@ -263,7 +263,7 @@ fun SettingsScreen(
                         OutlinedButton(
                             onClick = { AimonSoundPlayer.playPromptAnsweredChime(context, "cursor") },
                             shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF6EE7B7)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD8B4FE)),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             modifier = Modifier.weight(1f)
                         ) {
@@ -283,7 +283,7 @@ fun SettingsScreen(
                 shape = RoundedCornerShape(20.dp),
                 border = BorderStroke(
                     1.dp,
-                    Brush.horizontalGradient(listOf(Color(0xFFF59E0B), Color(0xFF10B981)))
+                    Brush.horizontalGradient(listOf(Color(0xFFF59E0B), Color(0xFFEC4899)))
                 ),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
             ) {
@@ -732,7 +732,7 @@ fun SettingsScreen(
                     Text(
                         text = "Cursor Agent Default Model",
                         style = MaterialTheme.typography.labelLarge,
-                        color = Color(0xFF6EE7B7),
+                        color = Color(0xFFD8B4FE),
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))

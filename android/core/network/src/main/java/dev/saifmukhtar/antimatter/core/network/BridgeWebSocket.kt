@@ -1059,388 +1059,415 @@ class BridgeWebSocket(private val context: Context) {
         )
     }
 
-    private fun optJsonBool(obj: com.google.gson.JsonObject?, key: String, defaultVal: Boolean = false): Boolean {
-        if (obj == null || !obj.has(key)) return defaultVal
-        val el = obj.get(key)
-        if (el == null || el.isJsonNull || !el.isJsonPrimitive) return defaultVal
-        return try {
-            el.asBoolean
-        } catch (_: Exception) {
-            defaultVal
-        }
-    }
+    companion object {
+        private val staticGson = Gson()
 
-    private fun optJsonLong(obj: com.google.gson.JsonObject?, key: String, defaultVal: Long = 0L): Long {
-        if (obj == null || !obj.has(key)) return defaultVal
-        val el = obj.get(key)
-        if (el == null || el.isJsonNull || !el.isJsonPrimitive) return defaultVal
-        return try {
-            el.asLong
-        } catch (_: Exception) {
-            defaultVal
-        }
-    }
-
-    private fun optJsonString(obj: com.google.gson.JsonObject?, key: String): String? {
-        if (obj == null || !obj.has(key)) return null
-        val el = obj.get(key)
-        if (el == null || el.isJsonNull) return null
-        return if (el.isJsonPrimitive) el.asString else el.toString()
-    }
-
-    private fun optJsonInt(obj: com.google.gson.JsonObject?, key: String): Int? {
-        if (obj == null || !obj.has(key)) return null
-        val el = obj.get(key)
-        if (el == null || el.isJsonNull || !el.isJsonPrimitive) return null
-        return try {
-            el.asInt
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun parseQuestionsArrayFromJsonElement(
-        rawQuestionsElem: com.google.gson.JsonElement?,
-        fallbackAnswers: List<String> = emptyList()
-    ): List<AskQuestionPrompt> {
-        if (rawQuestionsElem == null || rawQuestionsElem.isJsonNull) return emptyList()
-        val qArr: com.google.gson.JsonArray = when {
-            rawQuestionsElem.isJsonArray -> rawQuestionsElem.asJsonArray
-            rawQuestionsElem.isJsonPrimitive && rawQuestionsElem.asJsonPrimitive.isString -> {
-                try {
-                    val parsed = JsonParser.parseString(rawQuestionsElem.asString)
-                    if (parsed.isJsonArray) parsed.asJsonArray else return emptyList()
-                } catch (_: Exception) {
-                    return emptyList()
-                }
+        fun optJsonBool(obj: com.google.gson.JsonObject?, key: String, defaultVal: Boolean = false): Boolean {
+            if (obj == null || !obj.has(key)) return defaultVal
+            val el = obj.get(key)
+            if (el == null || el.isJsonNull || !el.isJsonPrimitive) return defaultVal
+            return try {
+                el.asBoolean
+            } catch (_: Exception) {
+                defaultVal
             }
-            else -> return emptyList()
         }
-        val result = mutableListOf<AskQuestionPrompt>()
-        for ((qIdx, qElem) in qArr.withIndex()) {
-            if (!qElem.isJsonObject) continue
-            val qObj = qElem.asJsonObject
-            val qText = optJsonString(qObj, "question")?.trim()
-                ?: optJsonString(qObj, "prompt")?.trim()
-                ?: optJsonString(qObj, "text")?.trim()
-                ?: ""
-            if (qText.isEmpty()) continue
-            val isMulti = optJsonBool(
-                qObj,
-                "is_multi_select",
-                optJsonBool(qObj, "isMultiSelect", false)
-            )
-            val optionsList = mutableListOf<String>()
-            if (qObj.has("options") && qObj.get("options").isJsonArray) {
-                for (optElem in qObj.getAsJsonArray("options")) {
-                    when {
-                        optElem.isJsonPrimitive -> {
-                            val s = optElem.asString.trim()
-                            if (s.isNotEmpty()) optionsList.add(s)
-                        }
-                        optElem.isJsonObject -> {
-                            val oObj = optElem.asJsonObject
-                            val s = (optJsonString(oObj, "label")
-                                ?: optJsonString(oObj, "text")
-                                ?: optJsonString(oObj, "value")
-                                ?: "").trim()
-                            if (s.isNotEmpty()) optionsList.add(s)
-                        }
+
+        fun optJsonLong(obj: com.google.gson.JsonObject?, key: String, defaultVal: Long = 0L): Long {
+            if (obj == null || !obj.has(key)) return defaultVal
+            val el = obj.get(key)
+            if (el == null || el.isJsonNull || !el.isJsonPrimitive) return defaultVal
+            return try {
+                el.asLong
+            } catch (_: Exception) {
+                defaultVal
+            }
+        }
+
+        fun optJsonString(obj: com.google.gson.JsonObject?, key: String): String? {
+            if (obj == null || !obj.has(key)) return null
+            val el = obj.get(key)
+            if (el == null || el.isJsonNull) return null
+            return if (el.isJsonPrimitive) el.asString else el.toString()
+        }
+
+        fun optJsonInt(obj: com.google.gson.JsonObject?, key: String): Int? {
+            if (obj == null || !obj.has(key)) return null
+            val el = obj.get(key)
+            if (el == null || el.isJsonNull || !el.isJsonPrimitive) return null
+            return try {
+                el.asInt
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        fun parseQuestionsArrayFromJsonElement(
+            rawQuestionsElem: com.google.gson.JsonElement?,
+            fallbackAnswers: List<String> = emptyList()
+        ): List<AskQuestionPrompt> {
+            if (rawQuestionsElem == null || rawQuestionsElem.isJsonNull) return emptyList()
+            val qArr: com.google.gson.JsonArray = when {
+                rawQuestionsElem.isJsonArray -> rawQuestionsElem.asJsonArray
+                rawQuestionsElem.isJsonPrimitive && rawQuestionsElem.asJsonPrimitive.isString -> {
+                    try {
+                        val parsed = JsonParser.parseString(rawQuestionsElem.asString)
+                        if (parsed.isJsonArray) parsed.asJsonArray else return emptyList()
+                    } catch (_: Exception) {
+                        return emptyList()
                     }
                 }
+                else -> return emptyList()
             }
-            val selectedList = mutableListOf<String>()
-            val selArr = when {
-                qObj.has("selected_answers") && qObj.get("selected_answers").isJsonArray ->
-                    qObj.getAsJsonArray("selected_answers")
-                qObj.has("selectedAnswers") && qObj.get("selectedAnswers").isJsonArray ->
-                    qObj.getAsJsonArray("selectedAnswers")
-                else -> null
-            }
-            if (selArr != null) {
-                for (sElem in selArr) {
-                    if (sElem.isJsonPrimitive) {
-                        val s = sElem.asString.trim()
-                        if (s.isNotEmpty()) selectedList.add(s)
-                    }
-                }
-            } else if (qIdx < fallbackAnswers.size && fallbackAnswers[qIdx].isNotBlank()) {
-                selectedList.add(fallbackAnswers[qIdx])
-            }
-            result.add(
-                AskQuestionPrompt(
-                    question = qText,
-                    options = optionsList,
-                    isMultiSelect = isMulti,
-                    selectedAnswers = selectedList
+            val result = mutableListOf<AskQuestionPrompt>()
+            for ((qIdx, qElem) in qArr.withIndex()) {
+                if (!qElem.isJsonObject) continue
+                val qObj = qElem.asJsonObject
+                val qText = optJsonString(qObj, "question")?.trim()
+                    ?: optJsonString(qObj, "prompt")?.trim()
+                    ?: optJsonString(qObj, "text")?.trim()
+                    ?: ""
+                if (qText.isEmpty()) continue
+                val isMulti = optJsonBool(
+                    qObj,
+                    "is_multi_select",
+                    optJsonBool(qObj, "isMultiSelect", false)
                 )
-            )
-        }
-        return result
-    }
-
-    private fun parseTranscriptStepsFromJson(
-        json: com.google.gson.JsonObject,
-        agentId: String?
-    ): List<InboundMessage.Step> {
-        val result = mutableListOf<InboundMessage.Step>()
-        if (!json.has("steps") || !json.get("steps").isJsonArray) {
+                val optionsList = mutableListOf<String>()
+                if (qObj.has("options") && qObj.get("options").isJsonArray) {
+                    for (optElem in qObj.getAsJsonArray("options")) {
+                        when {
+                            optElem.isJsonPrimitive -> {
+                                val s = optElem.asString.trim()
+                                if (s.isNotEmpty()) optionsList.add(s)
+                            }
+                            optElem.isJsonObject -> {
+                                val oObj = optElem.asJsonObject
+                                val s = (optJsonString(oObj, "label")
+                                    ?: optJsonString(oObj, "text")
+                                    ?: optJsonString(oObj, "value")
+                                    ?: "").trim()
+                                if (s.isNotEmpty()) optionsList.add(s)
+                            }
+                        }
+                    }
+                }
+                val selectedList = mutableListOf<String>()
+                val selArr = when {
+                    qObj.has("selected_answers") && qObj.get("selected_answers").isJsonArray ->
+                        qObj.getAsJsonArray("selected_answers")
+                    qObj.has("selectedAnswers") && qObj.get("selectedAnswers").isJsonArray ->
+                        qObj.getAsJsonArray("selectedAnswers")
+                    else -> null
+                }
+                if (selArr != null) {
+                    for (sElem in selArr) {
+                        if (sElem.isJsonPrimitive) {
+                            val s = sElem.asString.trim()
+                            if (s.isNotEmpty()) selectedList.add(s)
+                        }
+                    }
+                } else if (qIdx < fallbackAnswers.size && fallbackAnswers[qIdx].isNotBlank()) {
+                    selectedList.add(fallbackAnswers[qIdx])
+                }
+                result.add(
+                    AskQuestionPrompt(
+                        question = qText,
+                        options = optionsList,
+                        isMultiSelect = isMulti,
+                        selectedAnswers = selectedList
+                    )
+                )
+            }
             return result
         }
-        val stepsArr = json.getAsJsonArray("steps")
-        for (elem in stepsArr) {
-            if (!elem.isJsonObject) continue
-            val elemObj = elem.asJsonObject
-            val rawStepIdx = optJsonInt(elemObj, "stepIndex")
-                ?: optJsonInt(elemObj, "index")
-                ?: -1
-            val typeStr = optJsonString(elemObj, "type") ?: ""
-            val stepObj = if (elemObj.has("step") && elemObj.get("step").isJsonObject) {
-                elemObj.getAsJsonObject("step")
-            } else {
-                null
-            }
-            val caseVal = optJsonString(stepObj, "case") ?: ""
-            val askObj = if (elemObj.has("askQuestion") && elemObj.get("askQuestion").isJsonObject) {
-                elemObj.getAsJsonObject("askQuestion")
-            } else {
-                null
-            }
-            val tcArr = if (elemObj.has("tool_calls") && elemObj.get("tool_calls").isJsonArray) {
-                elemObj.getAsJsonArray("tool_calls")
-            } else {
-                null
-            }
-            val askToolCallObj = tcArr?.firstOrNull { tcEl ->
-                if (!tcEl.isJsonObject) false else {
-                    val n = optJsonString(tcEl.asJsonObject, "name") ?: ""
-                    n == "ask_question" || n == "AskUserQuestion"
-                }
-            }?.asJsonObject
-            val hasAskQuestion = typeStr == "ASK_QUESTION" ||
-                caseVal == "askQuestion" ||
-                askObj != null ||
-                askToolCallObj != null
 
-            if (typeStr == "USER_INPUT" || caseVal == "userInput") {
-                val valStr = optJsonString(elemObj, "text")
-                    ?: optJsonString(stepObj, "value")
-                    ?: ""
-                if (valStr.isNotBlank()) {
-                    result.add(
-                        InboundMessage.Step(
-                            index = -1,
-                            step = TrajectoryStep(
-                                case = "userInput",
-                                value = valStr,
-                                stepIndex = rawStepIdx
-                            ),
-                            agentId = agentId
-                        )
-                    )
+        fun parseTranscriptStepsFromJson(
+            json: com.google.gson.JsonObject,
+            agentId: String? = null
+        ): List<InboundMessage.Step> {
+            val result = mutableListOf<InboundMessage.Step>()
+            if (!json.has("steps") || !json.get("steps").isJsonArray) {
+                return result
+            }
+            val stepsArr = json.getAsJsonArray("steps")
+            for (elem in stepsArr) {
+                if (!elem.isJsonObject) continue
+                val elemObj = elem.asJsonObject
+                val rawStepIdx = optJsonInt(elemObj, "stepIndex")
+                    ?: optJsonInt(elemObj, "index")
+                    ?: -1
+                val typeStr = optJsonString(elemObj, "type") ?: ""
+                val stepObj = if (elemObj.has("step") && elemObj.get("step").isJsonObject) {
+                    elemObj.getAsJsonObject("step")
+                } else {
+                    null
                 }
-            } else if (
-                hasAskQuestion ||
-                typeStr == "PLANNER_RESPONSE" ||
-                typeStr == "TOOL_CALL" ||
-                elemObj.has("thinking") ||
-                elemObj.has("plannerResponse") ||
-                elemObj.has("tool_calls")
-            ) {
-                val thinkingStr = optJsonString(elemObj, "thinking")
-                    ?: optJsonString(elemObj, "plannerResponse")
-                    ?: (if (caseVal == "plannerResponse") optJsonString(stepObj, "value") else null)
-
-                if (!thinkingStr.isNullOrBlank()) {
-                    result.add(
-                        InboundMessage.Step(
-                            index = -1,
-                            step = TrajectoryStep(
-                                case = "plannerResponse",
-                                value = thinkingStr,
-                                thinking = thinkingStr,
-                                stepIndex = rawStepIdx
-                            ),
-                            agentId = agentId
-                        )
-                    )
+                val caseVal = optJsonString(stepObj, "case") ?: ""
+                val askObj = if (elemObj.has("askQuestion") && elemObj.get("askQuestion").isJsonObject) {
+                    elemObj.getAsJsonObject("askQuestion")
+                } else {
+                    null
                 }
+                val tcArr = if (elemObj.has("tool_calls") && elemObj.get("tool_calls").isJsonArray) {
+                    elemObj.getAsJsonArray("tool_calls")
+                } else {
+                    null
+                }
+                val askToolCallObj = tcArr?.firstOrNull { tcEl ->
+                    if (!tcEl.isJsonObject) false else {
+                        val n = optJsonString(tcEl.asJsonObject, "name") ?: ""
+                        n == "ask_question" || n == "AskUserQuestion"
+                    }
+                }?.asJsonObject
+                val hasAskQuestion = typeStr == "ASK_QUESTION" ||
+                    caseVal == "askQuestion" ||
+                    askObj != null ||
+                    askToolCallObj != null
 
-                if (tcArr != null) {
-                    for (tcElem in tcArr) {
-                        if (!tcElem.isJsonObject) continue
-                        val tcObj = tcElem.asJsonObject
-                        val name = optJsonString(tcObj, "name") ?: "tool"
-                        if (name == "ask_question" || name == "AskUserQuestion") {
-                            continue
-                        }
-                        val tAction = optJsonString(tcObj, "toolAction")
-                        val tSummary = optJsonString(tcObj, "toolSummary")
-                        val cmd = optJsonString(tcObj, "command")
-                        val args = optJsonString(tcObj, "arguments")
-                        val displayCmd = cmd?.takeIf { it.isNotBlank() }
-                            ?: tAction?.takeIf { it.isNotBlank() }
-                            ?: tSummary?.takeIf { it.isNotBlank() }
-                            ?: args?.takeIf { it.isNotBlank() }
-                            ?: name
+                if (typeStr == "USER_INPUT" || caseVal == "userInput") {
+                    val valStr = optJsonString(elemObj, "text")
+                        ?: optJsonString(stepObj, "value")
+                        ?: ""
+                    if (valStr.isNotBlank()) {
                         result.add(
                             InboundMessage.Step(
                                 index = -1,
                                 step = TrajectoryStep(
-                                    case = "toolCall",
-                                    value = args ?: displayCmd,
-                                    tool = name,
-                                    command = displayCmd,
-                                    toolAction = tAction,
-                                    toolSummary = tSummary,
+                                    case = "userInput",
+                                    value = valStr,
                                     stepIndex = rawStepIdx
                                 ),
                                 agentId = agentId
                             )
                         )
                     }
-                } else if (caseVal == "toolCall" && !hasAskQuestion) {
-                    val toolName = optJsonString(stepObj, "tool") ?: "tool"
-                    val cmd = optJsonString(stepObj, "command")
-                    val valStr = optJsonString(stepObj, "value")
-                    result.add(
-                        InboundMessage.Step(
-                            index = -1,
-                            step = TrajectoryStep(
-                                case = "toolCall",
-                                value = valStr,
-                                tool = toolName,
-                                command = cmd,
-                                stepIndex = rawStepIdx
-                            ),
-                            agentId = agentId
-                        )
-                    )
-                }
+                } else if (
+                    hasAskQuestion ||
+                    typeStr == "PLANNER_RESPONSE" ||
+                    typeStr == "TOOL_CALL" ||
+                    elemObj.has("thinking") ||
+                    elemObj.has("plannerResponse") ||
+                    elemObj.has("tool_calls")
+                ) {
+                    val thinkingStr = optJsonString(elemObj, "thinking")
+                        ?: optJsonString(elemObj, "plannerResponse")
+                        ?: (if (caseVal == "plannerResponse") optJsonString(stepObj, "value") else null)
 
-                val textStr = optJsonString(elemObj, "text")
-                    ?: (if (caseVal == "text" || caseVal == "markdownChunk") optJsonString(stepObj, "value") else null)
-                if (!textStr.isNullOrBlank() && typeStr != "ASK_QUESTION" && caseVal != "askQuestion") {
-                    result.add(
-                        InboundMessage.Step(
-                            index = -1,
-                            step = TrajectoryStep(
-                                case = "text",
-                                value = textStr,
-                                stepIndex = rawStepIdx
-                            ),
-                            agentId = agentId
-                        )
-                    )
-                }
+                    val textStr = optJsonString(elemObj, "text")
+                        ?: (if (caseVal == "text" || caseVal == "markdownChunk") optJsonString(stepObj, "value") else null)
 
-                if (hasAskQuestion) {
-                    val fallbackAnswers = mutableListOf<String>()
-                    if (askObj != null && askObj.has("answers") && askObj.get("answers").isJsonArray) {
-                        for (aEl in askObj.getAsJsonArray("answers")) {
-                            if (aEl.isJsonPrimitive) {
-                                val s = aEl.asString.trim()
-                                if (s.isNotEmpty()) fallbackAnswers.add(s)
-                            }
-                        }
+                    val hasNonAskToolCalls = tcArr != null && tcArr.any {
+                        it.isJsonObject && (optJsonString(it.asJsonObject, "name") ?: "") !in listOf("ask_question", "AskUserQuestion")
                     }
-                    var parsedQuestions = parseQuestionsArrayFromJsonElement(
-                        askObj?.get("questions") ?: stepObj?.get("questions"),
-                        fallbackAnswers
-                    )
-                    if (parsedQuestions.isEmpty() && askToolCallObj != null) {
-                        val rawArgsEl = askToolCallObj.get("arguments") ?: askToolCallObj.get("args")
-                        val argsJsonObj = when {
-                            rawArgsEl == null || rawArgsEl.isJsonNull -> null
-                            rawArgsEl.isJsonObject -> rawArgsEl.asJsonObject
-                            rawArgsEl.isJsonPrimitive && rawArgsEl.asJsonPrimitive.isString -> {
-                                try {
-                                    val p = JsonParser.parseString(rawArgsEl.asString)
-                                    if (p.isJsonObject) p.asJsonObject else null
-                                } catch (_: Exception) {
-                                    null
-                                }
-                            }
-                            else -> null
+
+                    if (hasNonAskToolCalls && !hasAskQuestion && !textStr.isNullOrBlank()) {
+                        val combinedThought = if (!thinkingStr.isNullOrBlank()) {
+                            "$thinkingStr\n\n$textStr"
+                        } else {
+                            textStr
                         }
-                        if (argsJsonObj != null) {
-                            parsedQuestions = parseQuestionsArrayFromJsonElement(
-                                argsJsonObj.get("questions"),
-                                fallbackAnswers
+                        result.add(
+                            InboundMessage.Step(
+                                index = -1,
+                                step = TrajectoryStep(
+                                    case = "plannerResponse",
+                                    value = combinedThought,
+                                    thinking = combinedThought,
+                                    stepIndex = rawStepIdx
+                                ),
+                                agentId = agentId
                             )
-                            if (parsedQuestions.isEmpty() && argsJsonObj.has("question")) {
-                                val singleArr = com.google.gson.JsonArray().apply { add(argsJsonObj) }
-                                parsedQuestions = parseQuestionsArrayFromJsonElement(singleArr, fallbackAnswers)
+                        )
+                    } else if (!thinkingStr.isNullOrBlank()) {
+                        result.add(
+                            InboundMessage.Step(
+                                index = -1,
+                                step = TrajectoryStep(
+                                    case = "plannerResponse",
+                                    value = thinkingStr,
+                                    thinking = thinkingStr,
+                                    stepIndex = rawStepIdx
+                                ),
+                                agentId = agentId
+                            )
+                        )
+                    }
+
+                    if (tcArr != null) {
+                        for (tcElem in tcArr) {
+                            if (!tcElem.isJsonObject) continue
+                            val tcObj = tcElem.asJsonObject
+                            val name = optJsonString(tcObj, "name") ?: "tool"
+                            if (name == "ask_question" || name == "AskUserQuestion") {
+                                continue
                             }
+                            val tAction = optJsonString(tcObj, "toolAction")
+                            val tSummary = optJsonString(tcObj, "toolSummary")
+                            val cmd = optJsonString(tcObj, "command")
+                            val args = optJsonString(tcObj, "arguments")
+                            val displayCmd = cmd?.takeIf { it.isNotBlank() }
+                                ?: tAction?.takeIf { it.isNotBlank() }
+                                ?: tSummary?.takeIf { it.isNotBlank() }
+                                ?: args?.takeIf { it.isNotBlank() }
+                                ?: name
+                            result.add(
+                                InboundMessage.Step(
+                                    index = -1,
+                                    step = TrajectoryStep(
+                                        case = "toolCall",
+                                        value = args ?: displayCmd,
+                                        tool = name,
+                                        command = displayCmd,
+                                        toolAction = tAction,
+                                        toolSummary = tSummary,
+                                        stepIndex = rawStepIdx
+                                    ),
+                                    agentId = agentId
+                                )
+                            )
                         }
+                    } else if (caseVal == "toolCall" && !hasAskQuestion) {
+                        val toolName = optJsonString(stepObj, "tool") ?: "tool"
+                        val cmd = optJsonString(stepObj, "command")
+                        val valStr = optJsonString(stepObj, "value")
+                        result.add(
+                            InboundMessage.Step(
+                                index = -1,
+                                step = TrajectoryStep(
+                                    case = "toolCall",
+                                    value = valStr,
+                                    tool = toolName,
+                                    command = cmd,
+                                    stepIndex = rawStepIdx
+                                ),
+                                agentId = agentId
+                            )
+                        )
                     }
 
-                    val isAnswered = when {
-                        askObj != null && askObj.has("answered") ->
-                            optJsonBool(askObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
-                        stepObj != null && stepObj.has("answered") ->
-                            optJsonBool(stepObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
-                        elemObj.has("answered") ->
-                            optJsonBool(elemObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
-                        else -> parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                    if (!hasNonAskToolCalls && !textStr.isNullOrBlank() && typeStr != "ASK_QUESTION" && caseVal != "askQuestion") {
+                        result.add(
+                            InboundMessage.Step(
+                                index = -1,
+                                step = TrajectoryStep(
+                                    case = "text",
+                                    value = textStr,
+                                    stepIndex = rawStepIdx
+                                ),
+                                agentId = agentId
+                            )
+                        )
                     }
 
-                    val summaryText = if (parsedQuestions.isNotEmpty()) {
-                        parsedQuestions.joinToString("\n\n") { q ->
-                            buildString {
-                                append(q.question)
-                                q.options.forEachIndexed { idx, opt ->
-                                    append("\n${idx + 1}. $opt")
+                    if (hasAskQuestion) {
+                        val fallbackAnswers = mutableListOf<String>()
+                        if (askObj != null && askObj.has("answers") && askObj.get("answers").isJsonArray) {
+                            for (aEl in askObj.getAsJsonArray("answers")) {
+                                if (aEl.isJsonPrimitive) {
+                                    val s = aEl.asString.trim()
+                                    if (s.isNotEmpty()) fallbackAnswers.add(s)
                                 }
                             }
                         }
-                    } else {
-                        optJsonString(elemObj, "text")?.takeIf { it.isNotBlank() }
-                            ?: optJsonString(stepObj, "value")?.takeIf { it.isNotBlank() }
-                            ?: "Agent Question"
-                    }
+                        var parsedQuestions = parseQuestionsArrayFromJsonElement(
+                            askObj?.get("questions") ?: stepObj?.get("questions"),
+                            fallbackAnswers
+                        )
+                        if (parsedQuestions.isEmpty() && askToolCallObj != null) {
+                            val rawArgsEl = askToolCallObj.get("arguments") ?: askToolCallObj.get("args")
+                            val argsJsonObj = when {
+                                rawArgsEl == null || rawArgsEl.isJsonNull -> null
+                                rawArgsEl.isJsonObject -> rawArgsEl.asJsonObject
+                                rawArgsEl.isJsonPrimitive && rawArgsEl.asJsonPrimitive.isString -> {
+                                    try {
+                                        val p = JsonParser.parseString(rawArgsEl.asString)
+                                        if (p.isJsonObject) p.asJsonObject else null
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+                                }
+                                else -> null
+                            }
+                            if (argsJsonObj != null) {
+                                parsedQuestions = parseQuestionsArrayFromJsonElement(
+                                    argsJsonObj.get("questions"),
+                                    fallbackAnswers
+                                )
+                                if (parsedQuestions.isEmpty() && argsJsonObj.has("question")) {
+                                    val singleArr = com.google.gson.JsonArray().apply { add(argsJsonObj) }
+                                    parsedQuestions = parseQuestionsArrayFromJsonElement(singleArr, fallbackAnswers)
+                                }
+                            }
+                        }
 
+                        val isAnswered = when {
+                            askObj != null && askObj.has("answered") ->
+                                optJsonBool(askObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                            stepObj != null && stepObj.has("answered") ->
+                                optJsonBool(stepObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                            elemObj.has("answered") ->
+                                optJsonBool(elemObj, "answered", false) || parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                            else -> parsedQuestions.any { it.selectedAnswers.isNotEmpty() }
+                        }
+
+                        val summaryText = if (parsedQuestions.isNotEmpty()) {
+                            parsedQuestions.joinToString("\n\n") { q ->
+                                buildString {
+                                    append(q.question)
+                                    q.options.forEachIndexed { idx, opt ->
+                                        append("\n${idx + 1}. $opt")
+                                    }
+                                }
+                            }
+                        } else {
+                            optJsonString(elemObj, "text")?.takeIf { it.isNotBlank() }
+                                ?: optJsonString(stepObj, "value")?.takeIf { it.isNotBlank() }
+                                ?: "Agent Question"
+                        }
+
+                        result.add(
+                            InboundMessage.Step(
+                                index = -1,
+                                step = TrajectoryStep(
+                                    case = "askQuestion",
+                                    value = summaryText,
+                                    questions = parsedQuestions,
+                                    isQuestionAnswered = isAnswered,
+                                    stepIndex = rawStepIdx
+                                ),
+                                agentId = agentId
+                            )
+                        )
+                    }
+                } else if (typeStr == "ERROR_MESSAGE" || caseVal == "errorMessage") {
+                    val errStr = optJsonString(elemObj, "text")
+                        ?: optJsonString(stepObj, "value")
+                        ?: "Agent execution error"
                     result.add(
                         InboundMessage.Step(
                             index = -1,
                             step = TrajectoryStep(
-                                case = "askQuestion",
-                                value = summaryText,
-                                questions = parsedQuestions,
-                                isQuestionAnswered = isAnswered,
+                                case = "errorMessage",
+                                value = errStr,
                                 stepIndex = rawStepIdx
                             ),
                             agentId = agentId
                         )
                     )
+                } else if (stepObj != null) {
+                    val parsedStep = staticGson.fromJson(stepObj, TrajectoryStep::class.java).copy(stepIndex = rawStepIdx)
+                    result.add(
+                        InboundMessage.Step(
+                            index = -1,
+                            step = parsedStep,
+                            agentId = agentId
+                        )
+                    )
                 }
-            } else if (typeStr == "ERROR_MESSAGE" || caseVal == "errorMessage") {
-                val errStr = optJsonString(elemObj, "text")
-                    ?: optJsonString(stepObj, "value")
-                    ?: "Agent execution error"
-                result.add(
-                    InboundMessage.Step(
-                        index = -1,
-                        step = TrajectoryStep(
-                            case = "errorMessage",
-                            value = errStr,
-                            stepIndex = rawStepIdx
-                        ),
-                        agentId = agentId
-                    )
-                )
-            } else if (stepObj != null) {
-                val parsedStep = gson.fromJson(stepObj, TrajectoryStep::class.java).copy(stepIndex = rawStepIdx)
-                result.add(
-                    InboundMessage.Step(
-                        index = -1,
-                        step = parsedStep,
-                        agentId = agentId
-                    )
-                )
             }
+            return result
         }
-        return result
     }
 }
 

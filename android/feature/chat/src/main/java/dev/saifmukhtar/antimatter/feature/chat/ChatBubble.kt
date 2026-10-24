@@ -1,3 +1,9 @@
+/*
+ * ChatBubble.kt
+ *
+ * Copyright (C) 2026, Charles Chiou
+ */
+
 package dev.saifmukhtar.antimatter.feature.chat
 
 import androidx.compose.animation.AnimatedVisibility
@@ -89,8 +95,15 @@ fun ChatBubble(
                         }
                     } else {
                         // For AI responses, render Markdown
+                        val safeMarkdown = remember(step.displayText) {
+                            if (step.displayText.length > 24_000) {
+                                step.displayText.take(24_000) + "\n\n… *(message truncated to prevent UI freeze)*"
+                            } else {
+                                step.displayText
+                            }
+                        }
                         MarkdownText(
-                            markdown = step.displayText,
+                            markdown = safeMarkdown,
                             textColor = textColor.toArgb(),
                             onLinkClicked = onLinkClicked
                         )

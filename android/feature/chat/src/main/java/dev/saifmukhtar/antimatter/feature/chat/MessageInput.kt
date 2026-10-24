@@ -9,7 +9,12 @@ package dev.saifmukhtar.antimatter.feature.chat
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,11 +24,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +48,84 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+
+fun mergeDictatedText(prefix: String, utterance: String): String {
+    val cleanUtterance = utterance.trim()
+    if (cleanUtterance.isEmpty()) return prefix
+    if (prefix.isBlank()) return cleanUtterance
+    return "${prefix.trimEnd()} $cleanUtterance"
+}
+
+class SpeechDictationSession(
+    private val onTextUpdated: (String) -> Unit,
+    private val onRestartRecognizer: () -> Unit = {}
+) {
+    var isListening: Boolean = false
+        private set
+    var userRequestedListening: Boolean = false
+        private set
+    var committedPrefix: String = ""
+        private set
+    var livePartial: String = ""
+        private set
+    var onListeningStateChanged: ((Boolean) -> Unit)? = null
+
+    fun startSession(initialText: String) {
+        committedPrefix = initialText
+        livePartial = ""
+        userRequestedListening = true
+        isListening = true
+        onListeningStateChanged?.invoke(true)
+    }
+
+    fun stopSession() {
+        userRequestedListening = false
+        isListening = false
+        livePartial = ""
+        onListeningStateChanged?.invoke(false)
+    }
+
+    fun onManualTextChanged(newText: String) {
+        committedPrefix = newText
+        livePartial = ""
+    }
+
+    fun onPartialRecognition(partial: String) {
+        if (!isListening) return
+        livePartial = partial
+        if (partial.isNotBlank()) {
+            onTextUpdated(mergeDictatedText(committedPrefix, partial))
+        }
+    }
+
+    fun onFinalRecognition(finalUtterance: String) {
+        if (finalUtterance.isNotBlank()) {
+            committedPrefix = mergeDictatedText(committedPrefix, finalUtterance)
+            onTextUpdated(committedPrefix)
+        }
+        livePartial = ""
+        if (userRequestedListening) {
+            isListening = true
+            onRestartRecognizer()
+        } else {
+            isListening = false
+            onListeningStateChanged?.invoke(false)
+        }
+    }
+
+    fun onRecognitionError(errorCode: Int) {
+        if (userRequestedListening && (errorCode == SpeechRecognizer.ERROR_NO_MATCH || errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)) {
+            isListening = true
+            onRestartRecognizer()
+        } else {
+            userRequestedListening = false
+            isListening = false
+            livePartial = ""
+            onListeningStateChanged?.invoke(false)
+        }
+    }
+}
 
 data class SlashCommandSpec(
     val command: String,
@@ -145,6 +230,7 @@ fun MessageInput(
     modifier: Modifier = Modifier
 ) {
     var text by remember { mutableStateOf("") }
+    var isListening by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -153,17 +239,118 @@ fun MessageInput(
     val maxInputHeightDp = computeMaxPromptInputHeightDp(configuration.screenHeightDp, imeBottomDp).dp
     val providerCatalog = remember(activeProvider) { slashCommandCatalogForProvider(activeProvider) }
     val placeholderText = remember(activeProvider) { placeholderForProvider(activeProvider) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
-    val speechLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val data = result.data
-            val results = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            val spokenText = results?.getOrNull(0)
-            if (!spokenText.isNullOrBlank()) {
-                text = if (text.isEmpty()) spokenText else "$text $spokenText"
+    val speechRecognizer = remember(context) {
+        runCatching {
+            if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            } else null
+        }.getOrNull()
+    }
+
+    DisposableEffect(speechRecognizer) {
+        onDispose {
+            runCatching { speechRecognizer?.destroy() }
+        }
+    }
+
+    val recognizerIntent = remember(context) {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        }
+    }
+
+    val listenerHolder = remember { arrayOfNulls<RecognitionListener>(1) }
+
+    val dictationSession = remember {
+        SpeechDictationSession(
+            onTextUpdated = { updated ->
+                text = updated
+            },
+            onRestartRecognizer = {
+                mainHandler.post {
+                    if (speechRecognizer != null) {
+                        runCatching {
+                            listenerHolder[0]?.let { speechRecognizer.setRecognitionListener(it) }
+                            speechRecognizer.startListening(recognizerIntent)
+                        }
+                    }
+                }
             }
+        ).apply {
+            onListeningStateChanged = { listening ->
+                isListening = listening
+            }
+        }
+    }
+
+    val recognitionListener = remember(dictationSession) {
+        object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onError(error: Int) {
+                dictationSession.onRecognitionError(error)
+            }
+            override fun onResults(results: Bundle?) {
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val utterance = matches?.firstOrNull() ?: ""
+                dictationSession.onFinalRecognition(utterance)
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val partial = matches?.firstOrNull() ?: ""
+                dictationSession.onPartialRecognition(partial)
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        }
+    }
+    listenerHolder[0] = recognitionListener
+
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            dictationSession.startSession(text)
+            isListening = true
+            runCatching {
+                speechRecognizer?.setRecognitionListener(recognitionListener)
+                speechRecognizer?.startListening(recognizerIntent)
+            }
+        }
+    }
+
+    val startListening = {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (hasPermission) {
+            dictationSession.startSession(text)
+            isListening = true
+            runCatching {
+                speechRecognizer?.setRecognitionListener(recognitionListener)
+                speechRecognizer?.startListening(recognizerIntent)
+            }
+        } else {
+            recordAudioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    val stopListening = {
+        dictationSession.stopSession()
+        isListening = false
+        runCatching {
+            speechRecognizer?.stopListening()
         }
     }
 
@@ -232,11 +419,15 @@ fun MessageInput(
                                     .fillMaxWidth()
                                     .clickable {
                                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        if (isListening) {
+                                            stopListening()
+                                        }
                                         if (spec.executeImmediatelyOnTap) {
                                             text = ""
                                             onSend(spec.command)
                                         } else {
                                             text = spec.insertText
+                                            dictationSession.onManualTextChanged(spec.insertText)
                                         }
                                     }
                                     .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -333,7 +524,10 @@ fun MessageInput(
                     .heightIn(min = 52.dp, max = maxInputHeightDp),
                 shape = RoundedCornerShape(26.dp),
                 color = Color(0xFF16161B),
-                border = BorderStroke(1.dp, Color(0xFF383842))
+                border = BorderStroke(
+                    1.dp,
+                    if (isListening) Color(0xFFEF4444) else Color(0xFF383842)
+                )
             ) {
                 Row(
                     modifier = Modifier
@@ -343,7 +537,10 @@ fun MessageInput(
                 ) {
                     androidx.compose.foundation.text.BasicTextField(
                         value = text,
-                        onValueChange = { text = it },
+                        onValueChange = {
+                            text = it
+                            dictationSession.onManualTextChanged(it)
+                        },
                         maxLines = 6,
                         modifier = Modifier
                             .weight(1f)
@@ -353,8 +550,8 @@ fun MessageInput(
                         decorationBox = { innerTextField ->
                             if (text.isEmpty()) {
                                 Text(
-                                    text = placeholderText,
-                                    color = Color(0xFF9CA3AF),
+                                    text = if (isListening) "Listening... tap mic to stop" else placeholderText,
+                                    color = if (isListening) Color(0xFFF87171) else Color(0xFF9CA3AF),
                                     style = MaterialTheme.typography.bodyLarge
                                 )
                             }
@@ -378,6 +575,38 @@ fun MessageInput(
                         )
                     }
 
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    IconButton(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            if (isListening) {
+                                stopListening()
+                            } else {
+                                startListening()
+                            }
+                        },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .then(
+                                if (isListening) {
+                                    Modifier.background(
+                                        color = Color(0xFFEF4444).copy(alpha = 0.22f),
+                                        shape = CircleShape
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = if (isListening) "Stop voice input" else "Start voice input",
+                            tint = if (isListening) Color(0xFFEF4444) else Color(0xFFD1D5DB),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
                     Spacer(modifier = Modifier.width(6.dp))
 
                     if (isGenerating) {
@@ -398,10 +627,14 @@ fun MessageInput(
                     } else {
                         FilledIconButton(
                             onClick = {
+                                if (isListening) {
+                                    stopListening()
+                                }
                                 if (text.isNotBlank() || selectedImageUri != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     onSend(text)
                                     text = ""
+                                    dictationSession.onManualTextChanged("")
                                 }
                             },
                             colors = IconButtonDefaults.filledIconButtonColors(

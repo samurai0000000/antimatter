@@ -24,6 +24,15 @@
     <!-- Biometric Authentication -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
+
     <application
         android:name="com.selfso.aimon.AimonApp"
         android:allowBackup="false"
