@@ -661,8 +661,7 @@ fun ChatScreen(
                     onSelectImage = onSelectImage,
                     activeProvider = effectiveProvider,
                     isInteractive = uiState.conversationId.isNullOrBlank() || uiState.conversationId == "new" || uiState.isSessionInteractive,
-                    nonInteractiveReason = uiState.nonInteractiveReason,
-                    onStartNewCliChat = { viewModel.selectConversation("new") }
+                    nonInteractiveReason = uiState.nonInteractiveReason
                 )
             }
         ) { padding ->

@@ -244,7 +244,6 @@ fun MessageInput(
     activeProvider: String = "antigravity",
     isInteractive: Boolean = true,
     nonInteractiveReason: String = "",
-    onStartNewCliChat: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var text by remember { mutableStateOf("") }
@@ -521,8 +520,7 @@ fun MessageInput(
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
@@ -546,20 +544,6 @@ fun MessageInput(
                                         color = Color(0xFFFCD34D)
                                     )
                                 }
-                            }
-                            TextButton(
-                                onClick = onStartNewCliChat,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                modifier = Modifier
-                                    .height(28.dp)
-                                    .testTag("start_new_cli_chat_button")
-                            ) {
-                                Text(
-                                    text = "Start New CLI Chat",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF38BDF8)
-                                )
                             }
                         }
                         Text(

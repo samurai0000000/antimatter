@@ -2065,7 +2065,7 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals(cursorReason, chatVm.uiState.value.error)
         assertFalse(chatVm.uiState.value.steps.any { it.value == "hello" })
 
-        // 4. Tapping start_new_cli_chat_button (selectConversation("new")) switches to "new" and restores isSessionInteractive == true
+        // 4. Starting a new session (selectConversation("new")) switches to "new" and restores isSessionInteractive == true
         chatVm.selectConversation("new")
         assertEquals("new", chatVm.uiState.value.conversationId)
         assertTrue(chatVm.uiState.value.isSessionInteractive)
