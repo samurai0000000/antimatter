@@ -35,6 +35,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.gson.Gson
+import com.google.gson.JsonParser
 import com.selfso.selfupdate.SelfUpdateController
 import com.selfso.selfupdate.UpdateState
 import dev.saifmukhtar.antimatter.BuildConfig
@@ -42,6 +44,15 @@ import dev.saifmukhtar.antimatter.core.ui.utils.LocalCrashHandler
 import dev.saifmukhtar.antimatter.feature.chat.AVAILABLE_MODEL_OPTIONS
 import dev.saifmukhtar.antimatter.feature.chat.CLAUDE_MODEL_OPTIONS
 import dev.saifmukhtar.antimatter.feature.chat.CURSOR_MODEL_OPTIONS
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 @Composable
 fun SettingsScreen(
@@ -76,6 +87,172 @@ fun SettingsScreen(
     val defaultCursorModelId by AimonAppPreferences.defaultCursorModelId.collectAsState()
     val updateState = updateController?.state?.collectAsState()?.value ?: UpdateState.Idle
     var hasCrashLogs by remember { mutableStateOf(LocalCrashHandler.hasUnsentLogs(context)) }
+
+    val coroutineScope = rememberCoroutineScope()
+    val httpClient = remember {
+        OkHttpClient.Builder()
+            .proxy(Proxy.NO_PROXY)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
+    val gson = remember { Gson() }
+
+    var serverCfgLoaded by remember { mutableStateOf(false) }
+    var serverCfgBusy by remember { mutableStateOf(false) }
+    var allowCliLockedResume by remember { mutableStateOf(true) }
+    var strictPresenceFdCheck by remember { mutableStateOf(true) }
+    var diagMasterEnabled by remember { mutableStateOf(false) }
+    var diagLogMobileHttp by remember { mutableStateOf(false) }
+    var diagLogRouterDecisions by remember { mutableStateOf(false) }
+    var diagLogIdlePolls by remember { mutableStateOf(false) }
+    var dbSizeBytes by remember { mutableStateOf(0L) }
+    var diagRowsCount by remember { mutableStateOf(0L) }
+    var staleLocksCount by remember { mutableStateOf(0) }
+    var serverStatusMsg by remember { mutableStateOf<String?>(null) }
+
+    fun resolveServerBaseUrl(): String? {
+        val raw = savedUrl?.takeIf { it.isNotBlank() } ?: AimonViewModel.currentBaseUrl.takeIf { it.isNotBlank() }
+        return raw?.trimEnd('/')
+    }
+
+    fun buildServerRequest(url: String): Request.Builder {
+        val b = Request.Builder().url(url).header("User-Agent", "aimon-mobile/1.0")
+        val tok = AimonViewModel.currentMobileToken
+        if (tok.isNotBlank()) {
+            b.header("X-Mobile-Token", tok)
+            b.header("Authorization", "Bearer $tok")
+        }
+        return b
+    }
+
+    fun fetchServerConfig() {
+        val base = resolveServerBaseUrl() ?: return
+        coroutineScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val req = buildServerRequest("$base/api/config").get().build()
+                    httpClient.newCall(req).execute().use { res ->
+                        val body = res.body?.string() ?: ""
+                        if (res.isSuccessful && body.isNotBlank()) {
+                            val root = JsonParser.parseString(body).asJsonObject
+                            val cfg = if (root.has("config") && root.get("config").isJsonObject) {
+                                root.getAsJsonObject("config")
+                            } else {
+                                root
+                            }
+                            val gw = if (cfg.has("gateway") && cfg.get("gateway").isJsonObject) {
+                                cfg.getAsJsonObject("gateway")
+                            } else null
+                            val dg = if (cfg.has("diagnostics") && cfg.get("diagnostics").isJsonObject) {
+                                cfg.getAsJsonObject("diagnostics")
+                            } else null
+                            val stats = if (root.has("storage_stats") && root.get("storage_stats").isJsonObject) {
+                                root.getAsJsonObject("storage_stats")
+                            } else null
+
+                            if (gw != null) {
+                                if (gw.has("allow_cli_locked_detached_resume")) {
+                                    allowCliLockedResume = gw.get("allow_cli_locked_detached_resume").asBoolean
+                                }
+                                if (gw.has("strict_presence_fd_check")) {
+                                    strictPresenceFdCheck = gw.get("strict_presence_fd_check").asBoolean
+                                }
+                            }
+                            if (dg != null) {
+                                if (dg.has("enabled")) diagMasterEnabled = dg.get("enabled").asBoolean
+                                if (dg.has("log_mobile_http")) diagLogMobileHttp = dg.get("log_mobile_http").asBoolean
+                                if (dg.has("log_router_decisions")) diagLogRouterDecisions = dg.get("log_router_decisions").asBoolean
+                                if (dg.has("log_idle_transcript_polls")) diagLogIdlePolls = dg.get("log_idle_transcript_polls").asBoolean
+                            }
+                            if (stats != null) {
+                                val dbSz = stats.get("database_size_bytes")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                val walSz = stats.get("wal_size_bytes")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                dbSizeBytes = dbSz + walSz
+                                diagRowsCount = stats.get("diagnostic_logs_count")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                            }
+                            if (root.has("stale_presence_locks_count") && !root.get("stale_presence_locks_count").isJsonNull) {
+                                staleLocksCount = root.get("stale_presence_locks_count").asInt
+                            }
+                            serverCfgLoaded = true
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun updateServerConfigPatch(gatewayPatch: Map<String, Any>? = null, diagPatch: Map<String, Any>? = null) {
+        val base = resolveServerBaseUrl() ?: return
+        coroutineScope.launch {
+            serverCfgBusy = true
+            try {
+                withContext(Dispatchers.IO) {
+                    val payload = mutableMapOf<String, Any>()
+                    if (gatewayPatch != null) payload["gateway"] = gatewayPatch
+                    if (diagPatch != null) payload["diagnostics"] = diagPatch
+                    val bodyStr = gson.toJson(payload)
+                    val req = buildServerRequest("$base/api/config")
+                        .post(bodyStr.toRequestBody("application/json".toMediaType()))
+                        .build()
+                    httpClient.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            serverStatusMsg = "Saved to aimon.cfg"
+                        } else {
+                            serverStatusMsg = "Save failed (HTTP ${res.code})"
+                        }
+                    }
+                }
+                fetchServerConfig()
+            } catch (e: Exception) {
+                serverStatusMsg = "Error: ${e.message}"
+            } finally {
+                serverCfgBusy = false
+            }
+        }
+    }
+
+    fun purgeServerDebugData() {
+        val base = resolveServerBaseUrl() ?: return
+        coroutineScope.launch {
+            serverCfgBusy = true
+            try {
+                withContext(Dispatchers.IO) {
+                    val payload = mapOf(
+                        "purge_debug_data" to true,
+                        "clear_logs" to true,
+                        "prune_telemetry" to true,
+                        "prune_stale_locks" to true,
+                        "vacuum" to true
+                    )
+                    val req = buildServerRequest("$base/api/agent/diagnostics/clear")
+                        .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+                        .build()
+                    httpClient.newCall(req).execute().use { res ->
+                        val body = res.body?.string() ?: ""
+                        if (res.isSuccessful && body.isNotBlank()) {
+                            val obj = JsonParser.parseString(body).asJsonObject
+                            val reclaimed = obj.get("reclaimed_bytes")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                            val reclaimedMb = String.format("%.2f", reclaimed.toDouble() / (1024.0 * 1024.0))
+                            serverStatusMsg = "Purged debug data (reclaimed ${reclaimedMb} MB)"
+                        } else {
+                            serverStatusMsg = "Purge failed (HTTP ${res.code})"
+                        }
+                    }
+                }
+                fetchServerConfig()
+            } catch (e: Exception) {
+                serverStatusMsg = "Purge error: ${e.message}"
+            } finally {
+                serverCfgBusy = false
+            }
+        }
+    }
+
+    LaunchedEffect(savedUrl, AimonViewModel.currentMobileToken) {
+        fetchServerConfig()
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -889,6 +1066,181 @@ fun SettingsScreen(
                                     Text("Clear", fontSize = 12.sp, color = Color(0xFFEF4444))
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // 5. Server Gateway Routing, Diagnostics & Disk Purge Card (aimon.cfg)
+        // =====================================================================
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(listOf(Color(0xFFEF4444), Color(0xFFF59E0B)))
+                ),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF12141A))
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(Color(0xFF7F1D1D), shape = CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.BugReport,
+                                contentDescription = null,
+                                tint = Color(0xFFFCA5A5),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Server Routing, Diagnostics & Disk Purge",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            val dbMb = String.format("%.2f", dbSizeBytes.toDouble() / (1024.0 * 1024.0))
+                            Text(
+                                text = if (serverCfgLoaded) {
+                                    "telemetry.db: ${dbMb} MB · Diag rows: $diagRowsCount · Stale locks: $staleLocksCount"
+                                } else {
+                                    "Dynamic aimon.cfg controls & SQLite debug storage purge"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFF9CA3AF)
+                            )
+                        }
+                    }
+
+                    if (!serverStatusMsg.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = serverStatusMsg!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = Color(0xFF34D399)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.Memory,
+                        title = "Detached CLI Resume on Locked Sessions",
+                        subtitle = "Allow agy --conversation -p fallback when terminal agy has no CSRF token",
+                        checked = allowCliLockedResume,
+                        onCheckedChange = {
+                            allowCliLockedResume = it
+                            updateServerConfigPatch(gatewayPatch = mapOf("allow_cli_locked_detached_resume" to it))
+                        }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.Dns,
+                        title = "Strict /proc/<pid>/fd Presence Lock Check",
+                        subtitle = "Verify live FD ownership before treating presence/*.lock as locked",
+                        checked = strictPresenceFdCheck,
+                        onCheckedChange = {
+                            strictPresenceFdCheck = it
+                            updateServerConfigPatch(gatewayPatch = mapOf("strict_presence_fd_check" to it))
+                        }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.BugReport,
+                        title = "Server Diagnostic Logging (Default Off)",
+                        subtitle = "Master switch for SQLite gateway_diagnostic_logs capture",
+                        checked = diagMasterEnabled,
+                        onCheckedChange = {
+                            diagMasterEnabled = it
+                            updateServerConfigPatch(diagPatch = mapOf("enabled" to it))
+                        }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.BugReport,
+                        title = "Log Mobile HTTP & Router Decisions",
+                        subtitle = "Capture /api/agent/* requests and prompt routing decisions when enabled",
+                        checked = diagLogMobileHttp && diagLogRouterDecisions,
+                        onCheckedChange = {
+                            diagLogMobileHttp = it
+                            diagLogRouterDecisions = it
+                            updateServerConfigPatch(
+                                diagPatch = mapOf(
+                                    "log_mobile_http" to it,
+                                    "log_router_decisions" to it
+                                )
+                            )
+                        }
+                    )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Color(0xFF1F2430)
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.BugReport,
+                        title = "Log Idle Transcript Polls (Default Off)",
+                        subtitle = "Suppress 2s unchanged GET /api/agent/transcript polling rows when off",
+                        checked = diagLogIdlePolls,
+                        onCheckedChange = {
+                            diagLogIdlePolls = it
+                            updateServerConfigPatch(diagPatch = mapOf("log_idle_transcript_polls" to it))
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = { purgeServerDebugData() },
+                            enabled = !serverCfgBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFDC2626),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Purge Debugging Data on Disk", fontSize = 12.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = { fetchServerConfig() },
+                            enabled = !serverCfgBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8))
+                        ) {
+                            Text("Refresh", fontSize = 12.sp)
                         }
                     }
                 }
