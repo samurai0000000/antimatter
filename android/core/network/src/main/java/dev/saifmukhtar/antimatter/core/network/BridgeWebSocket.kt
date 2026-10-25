@@ -550,13 +550,17 @@ class BridgeWebSocket(private val context: Context) {
                                         val parsedSteps = parseTranscriptStepsFromJson(json, message.agentId ?: "antigravity")
                                         val resolvedCompactedCid = cid.ifBlank { reqCid }
                                         val respWorkspace = optJsonString(json, "workspace") ?: ""
+                                        val respInteractive = optJsonBool(json, "interactive", true)
+                                        val respNonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
                                         _messages.emit(InboundMessage.SessionState(
                                             conversationId = resolvedCompactedCid,
                                             stepCount = parsedSteps.size,
                                             model = respModel.ifBlank { message.model },
                                             agentId = message.agentId ?: "antigravity",
                                             source = respSource,
-                                            workspace = respWorkspace
+                                            workspace = respWorkspace,
+                                            interactive = respInteractive,
+                                            nonInteractiveReason = respNonInteractiveReason
                                         ))
                                         if (parsedSteps.isNotEmpty()) {
                                             _messages.emit(InboundMessage.StepBatch(
@@ -711,6 +715,8 @@ class BridgeWebSocket(private val context: Context) {
                                 }
                                 val source = optJsonString(json, "source") ?: ""
                                 val workspace = optJsonString(json, "workspace") ?: ""
+                                val isInteractive = optJsonBool(json, "interactive", true)
+                                val nonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
                                 val steps = parseTranscriptStepsFromJson(json, message.agentId)
 
                                 if (message.sinceStepIndex != null && message.sinceStepIndex >= 0 && stepCount > 0 && stepCount <= message.sinceStepIndex) {
@@ -759,6 +765,8 @@ class BridgeWebSocket(private val context: Context) {
                                         }
                                         val fullSource = optJsonString(fullJson, "source") ?: source
                                         val fullWorkspace = optJsonString(fullJson, "workspace") ?: workspace
+                                        val fullInteractive = optJsonBool(fullJson, "interactive", isInteractive)
+                                        val fullNonInteractiveReason = optJsonString(fullJson, "nonInteractiveReason") ?: nonInteractiveReason
                                         val fullSteps = parseTranscriptStepsFromJson(fullJson, message.agentId)
                                         _messages.emit(InboundMessage.SessionState(
                                             conversationId = fullCid,
@@ -766,7 +774,9 @@ class BridgeWebSocket(private val context: Context) {
                                             stepCount = fullStepCount,
                                             agentId = message.agentId,
                                             source = fullSource,
-                                            workspace = fullWorkspace
+                                            workspace = fullWorkspace,
+                                            interactive = fullInteractive,
+                                            nonInteractiveReason = fullNonInteractiveReason
                                         ))
                                         _messages.emit(InboundMessage.StepBatch(
                                             steps = fullSteps,
@@ -782,7 +792,9 @@ class BridgeWebSocket(private val context: Context) {
                                             stepCount = stepCount,
                                             agentId = message.agentId,
                                             source = source,
-                                            workspace = workspace
+                                            workspace = workspace,
+                                            interactive = isInteractive,
+                                            nonInteractiveReason = nonInteractiveReason
                                         ))
                                     }
                                     if (steps.isNotEmpty() || message.sinceStepIndex == null || message.sinceStepIndex < 0) {
@@ -1065,106 +1077,134 @@ class BridgeWebSocket(private val context: Context) {
         }
     }
 
-    private fun parseHistoryListFromJson(body: String, isSearchResult: Boolean = false): InboundMessage.HistoryList {
-        val parsed = JsonParser.parseString(body)
-        var agentId: String? = "antigravity"
-        val convArray = when {
-            parsed.isJsonObject -> {
-                val root = parsed.asJsonObject
-                agentId = optJsonString(root, "agentId") ?: "antigravity"
-                if (root.has("conversations") && root.get("conversations").isJsonArray) {
-                    root.getAsJsonArray("conversations")
-                } else {
-                    null
-                }
-            }
-            parsed.isJsonArray -> parsed.asJsonArray
-            else -> null
-        }
-
-        val summaries = mutableListOf<ConversationSummary>()
-        if (convArray != null) {
-            for (elem in convArray) {
-                if (!elem.isJsonObject) continue
-                val obj = elem.asJsonObject
-                val id = optJsonString(obj, "id")?.takeIf { it.isNotBlank() } ?: continue
-                val rawTitle = optJsonString(obj, "title") ?: ""
-                val rawTs = optJsonLong(obj, "timestamp", 0L)
-                val timestampMs = when {
-                    rawTs in 1L..9_999_999_999L -> rawTs * 1000L
-                    rawTs > 0L -> rawTs
-                    else -> System.currentTimeMillis()
-                }
-                val source = optJsonString(obj, "source")?.takeIf { it.isNotBlank() } ?: "CLI"
-                val workspace = optJsonString(obj, "workspace") ?: ""
-                val workspacePath = optJsonString(obj, "workspacePath") ?: ""
-                val model = optJsonString(obj, "model") ?: ""
-                val active = optJsonBool(obj, "active", false)
-                val openInTerminal = optJsonBool(obj, "openInTerminal", false)
-                val terminalPts = optJsonString(obj, "terminalPts") ?: ""
-                val stepCount = optJsonInt(obj, "stepCount") ?: 0
-                val firstPrompt = optJsonString(obj, "firstPrompt") ?: ""
-                val lastPrompt = optJsonString(obj, "lastPrompt") ?: ""
-                val lastPromptStepIndex = optJsonInt(obj, "lastPromptStepIndex") ?: -1
-                val matchedPrompt = optJsonString(obj, "matchedPrompt") ?: ""
-                val matchedStepIndex = optJsonInt(obj, "matchedStepIndex") ?: -1
-
-                val prompts = mutableListOf<PromptEntry>()
-                if (obj.has("userPrompts") && obj.get("userPrompts").isJsonArray) {
-                    val pArr = obj.getAsJsonArray("userPrompts")
-                    for (pElem in pArr) {
-                        if (!pElem.isJsonObject) continue
-                        val pObj = pElem.asJsonObject
-                        val pIdx = optJsonInt(pObj, "stepIndex") ?: -1
-                        val pText = optJsonString(pObj, "text") ?: ""
-                        val pTs = optJsonString(pObj, "timestamp") ?: ""
-                        if (pText.isNotBlank()) {
-                            prompts.add(PromptEntry(stepIndex = pIdx, text = pText, timestamp = pTs))
-                        }
-                    }
-                }
-
-                val trimmedRawTitle = rawTitle.trim()
-                val isPlaceholderTitle = trimmedRawTitle.isEmpty() ||
-                    trimmedRawTitle.equals("Chat", ignoreCase = true) ||
-                    Regex("^Conversation [0-9a-fA-F]{8}$").matches(trimmedRawTitle)
-                val effectiveTitle = trimmedRawTitle.takeIf { !isPlaceholderTitle }
-                    ?: firstPrompt.takeIf { it.isNotBlank() }?.take(80)
-                    ?: lastPrompt.takeIf { it.isNotBlank() }?.take(80)
-                    ?: continue
-
-                summaries.add(
-                    ConversationSummary(
-                        id = id,
-                        title = effectiveTitle,
-                        timestamp = timestampMs,
-                        source = source,
-                        workspace = workspace,
-                        workspacePath = workspacePath,
-                        model = model,
-                        active = active,
-                        openInTerminal = openInTerminal,
-                        terminalPts = terminalPts,
-                        stepCount = stepCount,
-                        firstPrompt = firstPrompt,
-                        lastPrompt = lastPrompt,
-                        lastPromptStepIndex = lastPromptStepIndex,
-                        userPrompts = prompts,
-                        matchedPrompt = matchedPrompt,
-                        matchedStepIndex = matchedStepIndex
-                    )
-                )
-            }
-        }
-        return InboundMessage.HistoryList(
-            conversations = summaries,
-            agentId = agentId,
-            isSearchResult = isSearchResult
-        )
-    }
-
     companion object {
         private val staticGson = Gson()
+
+        fun parseHistoryListFromJson(body: String, isSearchResult: Boolean = false): InboundMessage.HistoryList {
+            val parsed = JsonParser.parseString(body)
+            var agentId: String? = "antigravity"
+            val convArray = when {
+                parsed.isJsonObject -> {
+                    val root = parsed.asJsonObject
+                    agentId = optJsonString(root, "agentId") ?: "antigravity"
+                    if (root.has("conversations") && root.get("conversations").isJsonArray) {
+                        root.getAsJsonArray("conversations")
+                    } else {
+                        null
+                    }
+                }
+                parsed.isJsonArray -> parsed.asJsonArray
+                else -> null
+            }
+
+            val summaries = mutableListOf<ConversationSummary>()
+            if (convArray != null) {
+                for (elem in convArray) {
+                    if (!elem.isJsonObject) continue
+                    val obj = elem.asJsonObject
+                    val id = optJsonString(obj, "id")?.takeIf { it.isNotBlank() } ?: continue
+                    val rawTitle = optJsonString(obj, "title") ?: ""
+                    val rawTs = optJsonLong(obj, "timestamp", 0L)
+                    val timestampMs = when {
+                        rawTs in 1L..9_999_999_999L -> rawTs * 1000L
+                        rawTs > 0L -> rawTs
+                        else -> System.currentTimeMillis()
+                    }
+                    val source = optJsonString(obj, "source")?.takeIf { it.isNotBlank() } ?: "CLI"
+                    val workspace = optJsonString(obj, "workspace") ?: ""
+                    val workspacePath = optJsonString(obj, "workspacePath") ?: ""
+                    val model = optJsonString(obj, "model") ?: ""
+                    val active = optJsonBool(obj, "active", false)
+                    val openInTerminal = optJsonBool(obj, "openInTerminal", false)
+                    val terminalPts = optJsonString(obj, "terminalPts") ?: ""
+                    val stepCount = optJsonInt(obj, "stepCount") ?: 0
+                    val firstPrompt = optJsonString(obj, "firstPrompt") ?: ""
+                    val lastPrompt = optJsonString(obj, "lastPrompt") ?: ""
+                    val lastPromptStepIndex = optJsonInt(obj, "lastPromptStepIndex") ?: -1
+                    val matchedPrompt = optJsonString(obj, "matchedPrompt") ?: ""
+                    val matchedStepIndex = optJsonInt(obj, "matchedStepIndex") ?: -1
+                    val interactive = optJsonBool(obj, "interactive", true)
+                    val nonInteractiveReason = optJsonString(obj, "nonInteractiveReason") ?: ""
+
+                    val prompts = mutableListOf<PromptEntry>()
+                    if (obj.has("userPrompts") && obj.get("userPrompts").isJsonArray) {
+                        val pArr = obj.getAsJsonArray("userPrompts")
+                        for (pElem in pArr) {
+                            if (!pElem.isJsonObject) continue
+                            val pObj = pElem.asJsonObject
+                            val pIdx = optJsonInt(pObj, "stepIndex") ?: -1
+                            val pText = optJsonString(pObj, "text") ?: ""
+                            val pTs = optJsonString(pObj, "timestamp") ?: ""
+                            if (pText.isNotBlank()) {
+                                prompts.add(PromptEntry(stepIndex = pIdx, text = pText, timestamp = pTs))
+                            }
+                        }
+                    }
+
+                    val trimmedRawTitle = rawTitle.trim()
+                    val isPlaceholderTitle = trimmedRawTitle.isEmpty() ||
+                        trimmedRawTitle.equals("Chat", ignoreCase = true) ||
+                        Regex("^Conversation [0-9a-fA-F]{8}$").matches(trimmedRawTitle)
+                    val effectiveTitle = trimmedRawTitle.takeIf { !isPlaceholderTitle }
+                        ?: firstPrompt.takeIf { it.isNotBlank() }?.take(80)
+                        ?: lastPrompt.takeIf { it.isNotBlank() }?.take(80)
+                        ?: continue
+
+                    summaries.add(
+                        ConversationSummary(
+                            id = id,
+                            title = effectiveTitle,
+                            timestamp = timestampMs,
+                            source = source,
+                            workspace = workspace,
+                            workspacePath = workspacePath,
+                            model = model,
+                            active = active,
+                            openInTerminal = openInTerminal,
+                            terminalPts = terminalPts,
+                            stepCount = stepCount,
+                            firstPrompt = firstPrompt,
+                            lastPrompt = lastPrompt,
+                            lastPromptStepIndex = lastPromptStepIndex,
+                            userPrompts = prompts,
+                            matchedPrompt = matchedPrompt,
+                            matchedStepIndex = matchedStepIndex,
+                            interactive = interactive,
+                            nonInteractiveReason = nonInteractiveReason
+                        )
+                    )
+                }
+            }
+            return InboundMessage.HistoryList(
+                conversations = summaries,
+                agentId = agentId,
+                isSearchResult = isSearchResult
+            )
+        }
+
+        fun parseSessionStateFromTranscriptJson(
+            json: com.google.gson.JsonObject,
+            fallbackCid: String = "",
+            agentId: String? = "antigravity"
+        ): InboundMessage.SessionState {
+            val cid = optJsonString(json, "conversationId")?.takeIf { it.isNotBlank() } ?: fallbackCid
+            val model = optJsonString(json, "model")?.takeIf { it.isNotBlank() } ?: "gemini-4-argon-medium"
+            val stepCount = optJsonInt(json, "stepCount") ?: 0
+            val source = optJsonString(json, "source") ?: ""
+            val workspace = optJsonString(json, "workspace") ?: ""
+            val interactive = optJsonBool(json, "interactive", true)
+            val nonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
+            return InboundMessage.SessionState(
+                conversationId = cid,
+                model = model,
+                stepCount = stepCount,
+                agentId = agentId,
+                source = source,
+                workspace = workspace,
+                interactive = interactive,
+                nonInteractiveReason = nonInteractiveReason
+            )
+        }
 
         fun optJsonBool(obj: com.google.gson.JsonObject?, key: String, defaultVal: Boolean = false): Boolean {
             if (obj == null || !obj.has(key)) return defaultVal

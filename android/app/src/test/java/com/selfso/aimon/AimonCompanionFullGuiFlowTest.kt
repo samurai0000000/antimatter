@@ -34,9 +34,11 @@ import dev.saifmukhtar.antimatter.feature.chat.ChatItem
 import dev.saifmukhtar.antimatter.feature.chat.ChatViewModel
 import dev.saifmukhtar.antimatter.feature.chat.SpeechDictationSession
 import dev.saifmukhtar.antimatter.feature.chat.computeMaxPromptInputHeightDp
+import dev.saifmukhtar.antimatter.feature.chat.effectivePlaceholderForSession
 import dev.saifmukhtar.antimatter.feature.chat.groupSteps
 import dev.saifmukhtar.antimatter.feature.chat.mergeDictatedText
 import dev.saifmukhtar.antimatter.feature.chat.placeholderForProvider
+import dev.saifmukhtar.antimatter.feature.chat.resolveNonInteractiveBannerText
 import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalog
 import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalogForProvider
 import dev.saifmukhtar.antimatter.feature.files.FilesViewModel
@@ -1920,6 +1922,183 @@ class AimonCompanionFullGuiFlowTest {
 
         val finalReply = finalSteps.first { it.stepIndex == 2 }
         assertEquals("Refactoring completed successfully", finalReply.value)
+    }
+
+    @Test
+    fun testNonInteractiveCursorAndClaudeIdeSessionsReadOnlyBannerAndPromptGuard() = runBlocking {
+        val cursorReason = "Bi-directional communication is not possible with this Cursor IDE GUI agent. Launch cursor-agent in a terminal/screen session to interact from mobile."
+        val claudeReason = "Bi-directional communication is not possible with this Claude IDE extension agent. Launch claude in a terminal/screen session to interact from mobile."
+        val nowSec = System.currentTimeMillis() / 1000L
+
+        registerRoute("/api/agent/conversations", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "conversations": [
+                {
+                  "id": "conv-cursor-ide-ro",
+                  "title": "Cursor IDE GUI Refactor",
+                  "source": "cursor",
+                  "workspace": "aimon",
+                  "timestamp": $nowSec,
+                  "interactive": false,
+                  "nonInteractiveReason": "$cursorReason"
+                },
+                {
+                  "id": "conv-claude-ide-ro",
+                  "title": "Claude VSCode Extension Debug",
+                  "source": "claude",
+                  "workspace": "aimon",
+                  "timestamp": ${nowSec - 60},
+                  "interactive": false,
+                  "nonInteractiveReason": "$claudeReason"
+                },
+                {
+                  "id": "conv-cursor-cli-rw",
+                  "title": "Cursor Terminal CLI Chat",
+                  "source": "cursor",
+                  "workspace": "aimon",
+                  "timestamp": ${nowSec - 120},
+                  "interactive": true,
+                  "nonInteractiveReason": ""
+                }
+              ]
+            }
+            """.trimIndent()
+        }
+
+        registerRoute("/api/agent/transcript", requireToken = "tok-live-verified-001") { req ->
+            val q = req.query ?: ""
+            when {
+                q.contains("id=conv-cursor-ide-ro") -> """
+                    {
+                      "conversationId": "conv-cursor-ide-ro",
+                      "source": "cursor",
+                      "workspace": "aimon",
+                      "model": "sonnet-4.6",
+                      "stepCount": 2,
+                      "interactive": false,
+                      "nonInteractiveReason": "$cursorReason",
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "Inspect Cursor IDE session"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Running in Cursor IDE GUI."}
+                      ]
+                    }
+                """.trimIndent()
+                q.contains("id=conv-claude-ide-ro") -> """
+                    {
+                      "conversationId": "conv-claude-ide-ro",
+                      "source": "claude",
+                      "workspace": "aimon",
+                      "model": "claude-sonnet-4-6",
+                      "stepCount": 2,
+                      "interactive": false,
+                      "nonInteractiveReason": "$claudeReason",
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "Inspect Claude IDE extension"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "Running in Claude Code IDE extension."}
+                      ]
+                    }
+                """.trimIndent()
+                else -> """
+                    {
+                      "conversationId": "conv-cursor-cli-rw",
+                      "source": "cursor",
+                      "workspace": "aimon",
+                      "model": "sonnet-4.6",
+                      "stepCount": 2,
+                      "interactive": true,
+                      "nonInteractiveReason": "",
+                      "steps": [
+                        {"stepIndex": 0, "type": "USER_INPUT", "text": "Interactive CLI turn"},
+                        {"stepIndex": 1, "type": "PLANNER_RESPONSE", "text": "CLI reply"}
+                      ]
+                    }
+                """.trimIndent()
+            }
+        }
+
+        val mockUserPrefs = mock(UserPreferencesRepository::class.java)
+        val mockDao = mock(AppDao::class.java)
+        `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getAllConversationsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+        `when`(mockDao.getAllConversationsSnapshot()).thenReturn(emptyList())
+
+        val bridgeWebSocket = BridgeWebSocket(mockApplication)
+        val chatVm = ChatViewModel(mockApplication, bridgeWebSocket, mockUserPrefs, mockDao)
+        chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
+
+        waitUntil { chatVm.uiState.value.history.size == 3 }
+
+        // 1. Both read-only IDE sessions and interactive CLI sessions must remain visible in history
+        val history = chatVm.uiState.value.history
+        assertEquals(3, history.size)
+        val cursorRoSummary = history.first { it.id == "conv-cursor-ide-ro" }
+        assertFalse(cursorRoSummary.interactive)
+        assertEquals(cursorReason, cursorRoSummary.nonInteractiveReason)
+
+        // 2. Select non-interactive Cursor IDE session
+        chatVm.selectConversation("conv-cursor-ide-ro")
+        waitUntil {
+            chatVm.uiState.value.conversationId == "conv-cursor-ide-ro" &&
+                chatVm.uiState.value.steps.size == 2 &&
+                !chatVm.uiState.value.isSessionInteractive
+        }
+        assertFalse(chatVm.uiState.value.isSessionInteractive)
+        assertEquals(cursorReason, chatVm.uiState.value.nonInteractiveReason)
+        assertEquals(cursorReason, resolveNonInteractiveBannerText(chatVm.uiState.value.nonInteractiveReason))
+        assertEquals(
+            "Bi-directional communication is not possible with this agent",
+            effectivePlaceholderForSession("cursor", isInteractive = chatVm.uiState.value.isSessionInteractive)
+        )
+
+        // 3. Calling sendMessage("hello") on a read-only session must NOT dispatch POST /api/agent/prompt
+        recordedRequests.removeIf { it.path == "/api/agent/prompt" }
+        chatVm.sendMessage("hello")
+        delay(100)
+        assertTrue(
+            "sendMessage must not send POST /api/agent/prompt for non-interactive session",
+            recordedRequests.none { it.path == "/api/agent/prompt" }
+        )
+        assertFalse(chatVm.uiState.value.isGenerating)
+        assertEquals(cursorReason, chatVm.uiState.value.error)
+        assertFalse(chatVm.uiState.value.steps.any { it.value == "hello" })
+
+        // 4. Tapping start_new_cli_chat_button (selectConversation("new")) switches to "new" and restores isSessionInteractive == true
+        chatVm.selectConversation("new")
+        assertEquals("new", chatVm.uiState.value.conversationId)
+        assertTrue(chatVm.uiState.value.isSessionInteractive)
+        assertEquals("", chatVm.uiState.value.nonInteractiveReason)
+        assertEquals(
+            "Ask Cursor Agent or type /...",
+            effectivePlaceholderForSession("cursor", isInteractive = chatVm.uiState.value.isSessionInteractive)
+        )
+
+        // 5. Select non-interactive Claude IDE extension session
+        chatVm.selectConversation("conv-claude-ide-ro")
+        waitUntil {
+            chatVm.uiState.value.conversationId == "conv-claude-ide-ro" &&
+                chatVm.uiState.value.steps.size == 2 &&
+                !chatVm.uiState.value.isSessionInteractive
+        }
+        assertFalse(chatVm.uiState.value.isSessionInteractive)
+        assertEquals(claudeReason, chatVm.uiState.value.nonInteractiveReason)
+
+        recordedRequests.removeIf { it.path == "/api/agent/prompt" }
+        chatVm.sendMessage("hello claude ide")
+        delay(100)
+        assertTrue(
+            "sendMessage must not send POST /api/agent/prompt for non-interactive Claude IDE session",
+            recordedRequests.none { it.path == "/api/agent/prompt" }
+        )
+        assertEquals(claudeReason, chatVm.uiState.value.error)
+
+        // Local slash command /new still works even when viewing a non-interactive session
+        chatVm.sendMessage("/new")
+        assertEquals("new", chatVm.uiState.value.conversationId)
+        assertTrue(chatVm.uiState.value.isSessionInteractive)
+        assertEquals("", chatVm.uiState.value.nonInteractiveReason)
     }
 }
 

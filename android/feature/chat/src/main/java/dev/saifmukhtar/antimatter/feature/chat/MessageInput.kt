@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -43,6 +44,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -206,6 +208,19 @@ fun placeholderForProvider(provider: String): String {
     }
 }
 
+fun effectivePlaceholderForSession(provider: String, isInteractive: Boolean): String {
+    if (!isInteractive) {
+        return "Bi-directional communication is not possible with this agent"
+    }
+    return placeholderForProvider(provider)
+}
+
+fun resolveNonInteractiveBannerText(nonInteractiveReason: String): String {
+    return nonInteractiveReason.ifBlank {
+        "Bi-directional communication is not possible with this agent."
+    }
+}
+
 fun slashCommandCatalogForProvider(provider: String): List<SlashCommandSpec> {
     return when (provider.trim().lowercase()) {
         "claude" -> claudeSlashCommandCatalog
@@ -227,6 +242,9 @@ fun MessageInput(
     selectedImageUri: Uri? = null,
     onSelectImage: (Uri?) -> Unit = {},
     activeProvider: String = "antigravity",
+    isInteractive: Boolean = true,
+    nonInteractiveReason: String = "",
+    onStartNewCliChat: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var text by remember { mutableStateOf("") }
@@ -238,7 +256,9 @@ fun MessageInput(
     val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp().value.toInt() }
     val maxInputHeightDp = computeMaxPromptInputHeightDp(configuration.screenHeightDp, imeBottomDp).dp
     val providerCatalog = remember(activeProvider) { slashCommandCatalogForProvider(activeProvider) }
-    val placeholderText = remember(activeProvider) { placeholderForProvider(activeProvider) }
+    val placeholderText = remember(activeProvider, isInteractive) {
+        effectivePlaceholderForSession(activeProvider, isInteractive)
+    }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     val speechRecognizer = remember(context) {
@@ -483,6 +503,74 @@ fun MessageInput(
                 }
             }
 
+            if (!isInteractive) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFF231815),
+                    border = BorderStroke(1.dp, Color(0xFFD97706).copy(alpha = 0.7f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .testTag("non_interactive_session_banner")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF78350F)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = "Read-only session",
+                                        tint = Color(0xFFFCD34D),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = "READ-ONLY IDE AGENT",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFFCD34D)
+                                    )
+                                }
+                            }
+                            TextButton(
+                                onClick = onStartNewCliChat,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .testTag("start_new_cli_chat_button")
+                            ) {
+                                Text(
+                                    text = "Start New CLI Chat",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF38BDF8)
+                                )
+                            }
+                        }
+                        Text(
+                            text = resolveNonInteractiveBannerText(nonInteractiveReason),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFFDE68A)
+                        )
+                    }
+                }
+            }
+
             if (selectedImageUri != null) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -523,7 +611,7 @@ fun MessageInput(
                     .fillMaxWidth()
                     .heightIn(min = 52.dp, max = maxInputHeightDp),
                 shape = RoundedCornerShape(26.dp),
-                color = Color(0xFF16161B),
+                color = if (isInteractive) Color(0xFF16161B) else Color(0xFF121216),
                 border = BorderStroke(
                     1.dp,
                     if (isListening) Color(0xFFEF4444) else Color(0xFF383842)
@@ -538,14 +626,19 @@ fun MessageInput(
                     androidx.compose.foundation.text.BasicTextField(
                         value = text,
                         onValueChange = {
-                            text = it
-                            dictationSession.onManualTextChanged(it)
+                            if (isInteractive) {
+                                text = it
+                                dictationSession.onManualTextChanged(it)
+                            }
                         },
+                        enabled = isInteractive,
                         maxLines = 6,
                         modifier = Modifier
                             .weight(1f)
                             .padding(vertical = 8.dp),
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.White),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = if (isInteractive) Color.White else Color(0xFF6B7280)
+                        ),
                         cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF6C5CE7)),
                         decorationBox = { innerTextField ->
                             if (text.isEmpty()) {
@@ -565,12 +658,13 @@ fun MessageInput(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
                         },
+                        enabled = isInteractive,
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Image,
                             contentDescription = "Attach",
-                            tint = Color(0xFFD1D5DB),
+                            tint = if (isInteractive) Color(0xFFD1D5DB) else Color(0xFF4B5563),
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -586,6 +680,7 @@ fun MessageInput(
                                 startListening()
                             }
                         },
+                        enabled = isInteractive,
                         modifier = Modifier
                             .size(36.dp)
                             .then(
@@ -602,7 +697,11 @@ fun MessageInput(
                         Icon(
                             imageVector = Icons.Default.Mic,
                             contentDescription = if (isListening) "Stop voice input" else "Start voice input",
-                            tint = if (isListening) Color(0xFFEF4444) else Color(0xFFD1D5DB),
+                            tint = when {
+                                !isInteractive -> Color(0xFF4B5563)
+                                isListening -> Color(0xFFEF4444)
+                                else -> Color(0xFFD1D5DB)
+                            },
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -630,18 +729,21 @@ fun MessageInput(
                                 if (isListening) {
                                     stopListening()
                                 }
-                                if (text.isNotBlank() || selectedImageUri != null) {
+                                if (isInteractive && (text.isNotBlank() || selectedImageUri != null)) {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     onSend(text)
                                     text = ""
                                     dictationSession.onManualTextChanged("")
                                 }
                             },
+                            enabled = isInteractive,
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = Color(0xFF6C5CE7),
                                 contentColor = Color.White
                             ),
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("send_message_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,

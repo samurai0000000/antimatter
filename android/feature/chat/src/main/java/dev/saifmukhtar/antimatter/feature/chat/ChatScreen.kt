@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -545,6 +546,14 @@ fun ChatScreen(
                                             bgColor = srcBg,
                                             textColor = srcFg
                                         )
+                                        if (!uiState.isSessionInteractive) {
+                                            MiniTagBadge(
+                                                text = "READ-ONLY",
+                                                bgColor = Color(0xFF78350F),
+                                                textColor = Color(0xFFFCD34D),
+                                                modifier = Modifier.testTag("header_read_only_badge")
+                                            )
+                                        }
                                         if (wsName.isNotBlank()) {
                                             MiniTagBadge(
                                                 text = wsName,
@@ -650,7 +659,10 @@ fun ChatScreen(
                     onCancel = onCancel,
                     selectedImageUri = uiState.selectedImageUri,
                     onSelectImage = onSelectImage,
-                    activeProvider = effectiveProvider
+                    activeProvider = effectiveProvider,
+                    isInteractive = uiState.conversationId.isNullOrBlank() || uiState.conversationId == "new" || uiState.isSessionInteractive,
+                    nonInteractiveReason = uiState.nonInteractiveReason,
+                    onStartNewCliChat = { viewModel.selectConversation("new") }
                 )
             }
         ) { padding ->
@@ -837,6 +849,7 @@ fun ChatScreen(
                                                 StepCase.ELICITATION -> {
                                                     AskQuestionCard(
                                                         step = step,
+                                                        isInteractive = uiState.conversationId.isNullOrBlank() || uiState.conversationId == "new" || uiState.isSessionInteractive,
                                                         onSubmitAnswers = { responses ->
                                                             viewModel.submitQuestionAnswers(step, responses)
                                                         }
@@ -1393,10 +1406,11 @@ fun ChatScreen(
 private fun MiniTagBadge(
     text: String,
     bgColor: Color,
-    textColor: Color
+    textColor: Color,
+    modifier: Modifier = Modifier
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .background(bgColor, RoundedCornerShape(4.dp))
             .padding(horizontal = 5.dp, vertical = 1.dp)
     ) {
@@ -1745,6 +1759,14 @@ fun ConversationRichCard(
                     bgColor = cardSrcBg,
                     textColor = cardSrcFg
                 )
+                if (!conv.interactive) {
+                    MiniTagBadge(
+                        text = "READ-ONLY",
+                        bgColor = Color(0xFF78350F),
+                        textColor = Color(0xFFFCD34D),
+                        modifier = Modifier.testTag("card_read_only_badge_${conv.id}")
+                    )
+                }
                 if (conv.workspace.isNotBlank()) {
                     MiniTagBadge(
                         text = conv.workspace,
@@ -1874,6 +1896,7 @@ fun ConversationRichCard(
 @Composable
 fun AskQuestionCard(
     step: TrajectoryStep,
+    isInteractive: Boolean = true,
     onSubmitAnswers: (List<QuestionResponsePayload>) -> Unit
 ) {
     var isSubmittedLocal by remember(step.stepIndex, step.isQuestionAnswered) {
@@ -1922,9 +1945,9 @@ fun AskQuestionCard(
                     textColor = Color(0xFF38BDF8)
                 )
                 MiniTagBadge(
-                    text = if (isAnswered) "Answered ✓" else "Action Required",
-                    bgColor = if (isAnswered) Color(0xFF064E3B) else Color(0xFF312E81),
-                    textColor = if (isAnswered) Color(0xFF34D399) else Color(0xFFC7D2FE)
+                    text = if (isAnswered) "Answered ✓" else if (!isInteractive) "Read-Only" else "Action Required",
+                    bgColor = if (isAnswered) Color(0xFF064E3B) else if (!isInteractive) Color(0xFF78350F) else Color(0xFF312E81),
+                    textColor = if (isAnswered) Color(0xFF34D399) else if (!isInteractive) Color(0xFFFCD34D) else Color(0xFFC7D2FE)
                 )
             }
 
@@ -1938,7 +1961,8 @@ fun AskQuestionCard(
                 if (!isAnswered) {
                     OutlinedTextField(
                         value = plainWriteIn,
-                        onValueChange = { plainWriteIn = it },
+                        onValueChange = { if (isInteractive) plainWriteIn = it },
+                        enabled = isInteractive,
                         placeholder = { Text("Other / custom response...") },
                         singleLine = false,
                         maxLines = 3,
@@ -1946,6 +1970,7 @@ fun AskQuestionCard(
                     )
                     Button(
                         onClick = {
+                            if (!isInteractive) return@Button
                             val trimmed = plainWriteIn.trim()
                             if (trimmed.isNotEmpty()) {
                                 isSubmittedLocal = true
@@ -1960,7 +1985,7 @@ fun AskQuestionCard(
                                 )
                             }
                         },
-                        enabled = plainWriteIn.isNotBlank(),
+                        enabled = plainWriteIn.isNotBlank() && isInteractive,
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF0284C7),
@@ -2006,7 +2031,7 @@ fun AskQuestionCard(
                             val isSelected = currentSelected.contains(opt)
                             Surface(
                                 onClick = {
-                                    if (!isAnswered) {
+                                    if (!isAnswered && isInteractive) {
                                         if (q.isMultiSelect) {
                                             val updated = if (isSelected) {
                                                 currentSelected - opt
@@ -2037,13 +2062,13 @@ fun AskQuestionCard(
                                         Checkbox(
                                             checked = isSelected,
                                             onCheckedChange = null,
-                                            enabled = !isAnswered
+                                            enabled = !isAnswered && isInteractive
                                         )
                                     } else {
                                         RadioButton(
                                             selected = isSelected,
                                             onClick = null,
-                                            enabled = !isAnswered
+                                            enabled = !isAnswered && isInteractive
                                         )
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
@@ -2061,7 +2086,8 @@ fun AskQuestionCard(
                         if (!isAnswered) {
                             OutlinedTextField(
                                 value = writeInByQuestion[qIdx] ?: "",
-                                onValueChange = { writeInByQuestion[qIdx] = it },
+                                onValueChange = { if (isInteractive) writeInByQuestion[qIdx] = it },
+                                enabled = isInteractive,
                                 placeholder = {
                                     Text(
                                         "Other / custom response...",
@@ -2100,11 +2126,12 @@ fun AskQuestionCard(
                 }
 
                 if (!isAnswered) {
-                    val canSubmit = questions.indices.any { idx ->
+                    val canSubmit = isInteractive && questions.indices.any { idx ->
                         !selectedByQuestion[idx].isNullOrEmpty() || !writeInByQuestion[idx].isNullOrBlank()
                     }
                     Button(
                         onClick = {
+                            if (!isInteractive) return@Button
                             val payloads = questions.mapIndexed { idx, q ->
                                 QuestionResponsePayload(
                                     question = q.question,

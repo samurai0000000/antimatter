@@ -97,6 +97,8 @@ data class ChatUiState(
     val conversationModel: String = "",
     val activeProvider: String = "antigravity",
     val activeSessionSource: String = "",
+    val isSessionInteractive: Boolean = true,
+    val nonInteractiveReason: String = "",
     val error: String? = null,
     val history: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
     val filteredHistory: List<dev.saifmukhtar.antimatter.core.network.ConversationSummary> = emptyList(),
@@ -432,10 +434,17 @@ class ChatViewModel @Inject constructor(
         } else {
             _uiState.value.conversationModel
         }
-        _uiState.update {
-            it.copy(
+        val matchedConv = if (!activeCid.isNullOrBlank() && activeCid != "new") {
+            richSummaryMap[activeCid]
+        } else {
+            null
+        }
+        _uiState.update { state ->
+            state.copy(
                 history = sorted,
-                conversationModel = resolvedConvModel
+                conversationModel = resolvedConvModel,
+                isSessionInteractive = if (activeCid.isNullOrBlank() || activeCid == "new") true else (matchedConv?.interactive ?: state.isSessionInteractive),
+                nonInteractiveReason = if (activeCid.isNullOrBlank() || activeCid == "new") "" else (matchedConv?.nonInteractiveReason ?: state.nonInteractiveReason)
             )
         }
         reapplySearchFilter()
@@ -729,6 +738,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun selectConversation(id: String) {
+        if (id.isBlank() || id == "new") {
+            startNewConversation(preserveCurrentProvider = true)
+            return
+        }
         subscribeConversation(id, null)
     }
 
@@ -799,6 +812,8 @@ class ChatViewModel @Inject constructor(
                             conversationModel = "",
                             activeProvider = preservedProv,
                             activeSessionSource = message.source.ifBlank { it.activeSessionSource },
+                            isSessionInteractive = true,
+                            nonInteractiveReason = "",
                             focusedOriginalStepIndex = null,
                             pendingFocusStepIndex = null
                         )
@@ -827,6 +842,8 @@ class ChatViewModel @Inject constructor(
                         conversationModel = resolvedConvModel.ifBlank { it.conversationModel },
                         activeSessionSource = resolvedSource.ifBlank { it.activeSessionSource },
                         activeProvider = updatedProvider ?: it.activeProvider,
+                        isSessionInteractive = message.interactive,
+                        nonInteractiveReason = message.nonInteractiveReason,
                         cloudflareUrl = message.cloudflareUrl,
                         environment = message.environment
                     )
@@ -840,7 +857,9 @@ class ChatViewModel @Inject constructor(
                             source = resolvedSource.ifBlank { existingSummary.source },
                             model = resolvedConvModel.ifBlank { existingSummary.model },
                             workspace = message.workspace.ifBlank { existingSummary.workspace },
-                            stepCount = maxOf(existingSummary.stepCount, message.stepCount)
+                            stepCount = maxOf(existingSummary.stepCount, message.stepCount),
+                            interactive = message.interactive,
+                            nonInteractiveReason = message.nonInteractiveReason
                         )
                     } else {
                         ConversationSummary(
@@ -850,7 +869,9 @@ class ChatViewModel @Inject constructor(
                             source = resolvedSource.ifBlank { "CLI" },
                             workspace = message.workspace,
                             model = resolvedConvModel,
-                            stepCount = message.stepCount
+                            stepCount = message.stepCount,
+                            interactive = message.interactive,
+                            nonInteractiveReason = message.nonInteractiveReason
                         )
                     }
                     richSummaryMap[cid] = mergedSummary
@@ -1382,7 +1403,13 @@ class ChatViewModel @Inject constructor(
                     )
                 )
             }
-            val newSessionSrc = if (state.conversationId.isNullOrBlank() || state.conversationId == "new") {
+            val isNewConv = state.conversationId.isNullOrBlank() || state.conversationId == "new"
+            val matchedConv = if (isNewConv) {
+                null
+            } else {
+                richSummaryMap[state.conversationId] ?: state.history.find { it.id == state.conversationId }
+            }
+            val newSessionSrc = if (isNewConv) {
                 normalized
             } else {
                 state.activeSessionSource
@@ -1390,6 +1417,8 @@ class ChatViewModel @Inject constructor(
             state.copy(
                 activeProvider = normalized,
                 activeSessionSource = newSessionSrc,
+                isSessionInteractive = if (isNewConv) true else (matchedConv?.interactive ?: state.isSessionInteractive),
+                nonInteractiveReason = if (isNewConv) "" else (matchedConv?.nonInteractiveReason ?: state.nonInteractiveReason),
                 selectedModel = defaultModel,
                 conversationModel = if (defaultModel == "default") "" else defaultModel,
                 showProviderPickerDialog = false,
@@ -1481,7 +1510,7 @@ class ChatViewModel @Inject constructor(
                 }
                 return
             }
-            if (cmdLower == "/model") {
+            if (cmdLower == "/model" || cmdLower == "/models") {
                 if (cmdArg.isBlank()) {
                     setShowModelPickerDialog(true)
                 } else {
@@ -1494,6 +1523,25 @@ class ChatViewModel @Inject constructor(
                 }
                 return
             }
+        }
+
+        val currentState = _uiState.value
+        val isLocalReadOnlySlashCommand = imageUri == null && trimmedInput.startsWith("/") &&
+            trimmedInput.substringBefore(' ').lowercase() in setOf(
+                "/clear", "/new", "/reset", "/help", "/status", "/doctor",
+                "/model", "/models", "/provider", "/claude", "/cursor", "/agy", "/antigravity",
+                "/settings", "/config", "/mode", "/collapse", "/expand"
+            )
+        if (!isLocalReadOnlySlashCommand &&
+            !currentState.conversationId.isNullOrBlank() &&
+            currentState.conversationId != "new" &&
+            !currentState.isSessionInteractive
+        ) {
+            val reason = currentState.nonInteractiveReason.ifBlank {
+                "Bi-directional communication is not possible with this agent."
+            }
+            _uiState.update { it.copy(error = reason, isGenerating = false) }
+            return
         }
 
         val textToSend = text.ifBlank { "Attached an image." }
@@ -1593,6 +1641,17 @@ class ChatViewModel @Inject constructor(
 
     fun submitQuestionAnswers(step: TrajectoryStep, responses: List<QuestionResponsePayload>) {
         if (responses.isEmpty()) return
+        val currentState = _uiState.value
+        if (!currentState.conversationId.isNullOrBlank() &&
+            currentState.conversationId != "new" &&
+            !currentState.isSessionInteractive
+        ) {
+            val reason = currentState.nonInteractiveReason.ifBlank {
+                "Bi-directional communication is not possible with this agent."
+            }
+            _uiState.update { it.copy(error = reason, isGenerating = false) }
+            return
+        }
         val summaryParts = responses.mapNotNull { r ->
             val parts = mutableListOf<String>()
             parts.addAll(r.selectedOptions.filter { it.isNotBlank() })
@@ -1690,6 +1749,8 @@ class ChatViewModel @Inject constructor(
                 error = null,
                 activeProvider = targetProv,
                 activeSessionSource = if (preserveCurrentProvider) targetProv else "",
+                isSessionInteractive = true,
+                nonInteractiveReason = "",
                 selectedModel = defaultModel,
                 conversationModel = if (defaultModel == "default") "" else defaultModel,
                 focusedOriginalStepIndex = null,
@@ -1706,6 +1767,19 @@ class ChatViewModel @Inject constructor(
     }
 
     fun subscribeConversation(id: String, targetFocusStepIndex: Int? = null) {
+        if (id.isBlank() || id == "new") {
+            startNewConversation(preserveCurrentProvider = true)
+            return
+        }
+        val initialMatchedConv = richSummaryMap[id] ?: _uiState.value.history.find { it.id == id }
+        _uiState.update {
+            it.copy(
+                conversationId = id,
+                isSessionInteractive = initialMatchedConv?.interactive ?: true,
+                nonInteractiveReason = initialMatchedConv?.nonInteractiveReason ?: "",
+                error = null
+            )
+        }
         viewModelScope.launch {
             lastStepIndex = -1
             pendingFullRefresh = true
@@ -1746,8 +1820,9 @@ class ChatViewModel @Inject constructor(
                 targetFocusStepIndex
             }
 
-            val convModel = richSummaryMap[id]?.model ?: ""
-            val convSource = richSummaryMap[id]?.source?.trim()?.lowercase() ?: ""
+            val matchedConv = richSummaryMap[id] ?: _uiState.value.history.find { it.id == id }
+            val convModel = matchedConv?.model ?: ""
+            val convSource = matchedConv?.source?.trim()?.lowercase() ?: ""
             val inferredProvider = when (convSource) {
                 "claude" -> "claude"
                 "cursor" -> "cursor"
@@ -1762,6 +1837,8 @@ class ChatViewModel @Inject constructor(
                     error = null,
                     activeProvider = inferredProvider,
                     activeSessionSource = convSource,
+                    isSessionInteractive = matchedConv?.interactive ?: it.isSessionInteractive,
+                    nonInteractiveReason = matchedConv?.nonInteractiveReason ?: it.nonInteractiveReason,
                     selectedModel = "default",
                     conversationModel = convModel,
                     showConversationPickerSheet = false,

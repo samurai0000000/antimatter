@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.setMain
 import com.google.gson.JsonParser
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -140,5 +141,93 @@ class BridgeWebSocketTest {
         assertEquals("Pick option:", parsed[1].step.questions[0].question)
         assertEquals(listOf("A", "B"), parsed[1].step.questions[0].options)
         assertTrue("Must not contain generic toolCall for ask_question", parsed.none { it.step.stepCase == StepCase.TOOL_CALL })
+    }
+
+    @Test
+    fun `parseHistoryListFromJson and parseSessionStateFromTranscriptJson parse interactive and nonInteractiveReason`() {
+        val cursorReason = "Bi-directional communication is not possible with this Cursor IDE GUI agent. Launch cursor-agent in a terminal/screen session to interact from mobile."
+        val claudeReason = "Bi-directional communication is not possible with this Claude IDE extension agent. Launch claude in a terminal/screen session to interact from mobile."
+        val historyJson = """
+            {
+              "agentId": "antigravity",
+              "conversations": [
+                {
+                  "id": "conv-cursor-ide-ro",
+                  "title": "Cursor IDE GUI Session",
+                  "source": "cursor",
+                  "workspace": "aimon",
+                  "timestamp": 1760460100,
+                  "interactive": false,
+                  "nonInteractiveReason": "$cursorReason"
+                },
+                {
+                  "id": "conv-claude-ide-ro",
+                  "title": "Claude IDE Extension Session",
+                  "source": "claude",
+                  "workspace": "aimon",
+                  "timestamp": 1760460200,
+                  "interactive": false,
+                  "nonInteractiveReason": "$claudeReason"
+                },
+                {
+                  "id": "conv-cli-default",
+                  "title": "Interactive CLI Session",
+                  "source": "cli",
+                  "workspace": "aimon",
+                  "timestamp": 1760460300
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val historyList = BridgeWebSocket.parseHistoryListFromJson(historyJson)
+        assertEquals(3, historyList.conversations.size)
+
+        val cursorConv = historyList.conversations.first { it.id == "conv-cursor-ide-ro" }
+        assertFalse(cursorConv.interactive)
+        assertEquals(cursorReason, cursorConv.nonInteractiveReason)
+
+        val claudeConv = historyList.conversations.first { it.id == "conv-claude-ide-ro" }
+        assertFalse(claudeConv.interactive)
+        assertEquals(claudeReason, claudeConv.nonInteractiveReason)
+
+        val defaultConv = historyList.conversations.first { it.id == "conv-cli-default" }
+        assertTrue(defaultConv.interactive)
+        assertEquals("", defaultConv.nonInteractiveReason)
+
+        val roTranscriptJson = JsonParser.parseString(
+            """
+            {
+              "conversationId": "conv-cursor-ide-ro",
+              "source": "cursor",
+              "workspace": "aimon",
+              "model": "sonnet-4.6",
+              "stepCount": 4,
+              "interactive": false,
+              "nonInteractiveReason": "$cursorReason",
+              "steps": []
+            }
+            """.trimIndent()
+        ).asJsonObject
+        val roSessionState = BridgeWebSocket.parseSessionStateFromTranscriptJson(roTranscriptJson, "conv-cursor-ide-ro", "antigravity")
+        assertEquals("conv-cursor-ide-ro", roSessionState.conversationId)
+        assertFalse(roSessionState.interactive)
+        assertEquals(cursorReason, roSessionState.nonInteractiveReason)
+
+        val defaultTranscriptJson = JsonParser.parseString(
+            """
+            {
+              "conversationId": "conv-cli-default",
+              "source": "cli",
+              "model": "gemini-4-argon-high",
+              "stepCount": 2,
+              "steps": []
+            }
+            """.trimIndent()
+        ).asJsonObject
+        val rwSessionState = BridgeWebSocket.parseSessionStateFromTranscriptJson(defaultTranscriptJson, "conv-cli-default", "antigravity")
+        assertEquals("conv-cli-default", rwSessionState.conversationId)
+        assertTrue(rwSessionState.interactive)
+        assertEquals("", rwSessionState.nonInteractiveReason)
     }
 }

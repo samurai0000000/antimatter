@@ -95,7 +95,9 @@ sealed class InboundMessage {
         val environment: String? = null,
         val agentId: String? = null,
         val source: String = "",
-        val workspace: String = ""
+        val workspace: String = "",
+        val interactive: Boolean = true,
+        val nonInteractiveReason: String = ""
     ) : InboundMessage()
 
     data class Step(
@@ -256,5 +258,7 @@ data class ConversationSummary(
     val lastPromptStepIndex: Int = -1,
     val userPrompts: List<PromptEntry> = emptyList(),
     val matchedPrompt: String = "",
-    val matchedStepIndex: Int = -1
+    val matchedStepIndex: Int = -1,
+    val interactive: Boolean = true,
+    val nonInteractiveReason: String = ""
 )
