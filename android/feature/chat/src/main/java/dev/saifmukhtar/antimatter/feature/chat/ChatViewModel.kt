@@ -194,7 +194,7 @@ class ChatViewModel @Inject constructor(
     init {
         viewModelScope.launch(Dispatchers.IO) {
             val localAgents = try {
-                appDao.getAllAgentsFlow().catch { emit(emptyList()) }.firstOrNull()
+                appDao.getAllAgentsFlow()?.catch { emit(emptyList()) }?.firstOrNull()
             } catch (t: Throwable) {
                 android.util.Log.w("ChatViewModel", "getAllAgentsFlow error: ${t.message}")
                 null
@@ -226,12 +226,25 @@ class ChatViewModel @Inject constructor(
             }
             _uiState.map { it.activeAgentId }.distinctUntilChanged().flatMapLatest { agentId ->
                 if (agentId != null) {
-                    appDao.getConversationsForAgentFlow(agentId).catch { e ->
+                    val flow = try {
+                        appDao.getConversationsForAgentFlow(agentId)
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    (flow ?: flowOf(emptyList())).catch { e ->
                         android.util.Log.w("ChatViewModel", "getConversationsForAgentFlow error: ${e.message}")
                         emit(emptyList())
                     }
                 } else {
-                    flowOf(emptyList())
+                    val flow = try {
+                        appDao.getAllConversationsFlow()
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    (flow ?: flowOf(emptyList())).catch { e ->
+                        android.util.Log.w("ChatViewModel", "getAllConversationsFlow error: ${e.message}")
+                        emit(emptyList())
+                    }
                 }
             }.catch { e ->
                 android.util.Log.w("ChatViewModel", "conversations flow error: ${e.message}")
@@ -335,6 +348,24 @@ class ChatViewModel @Inject constructor(
             }.thenByDescending { it.openInTerminal }
                 .thenByDescending { it.active }
         )
+    }
+
+    private fun mergeAskQuestionState(incoming: TrajectoryStep, prevAskStep: TrajectoryStep?): TrajectoryStep {
+        if (incoming.stepCase == StepCase.ASK_QUESTION && prevAskStep != null && prevAskStep.isQuestionAnswered && !incoming.isQuestionAnswered) {
+            val mergedQuestions = incoming.questions.mapIndexed { qIdx, q ->
+                val prevQ = prevAskStep.questions.getOrNull(qIdx)
+                if (prevQ != null && prevQ.selectedAnswers.isNotEmpty() && q.selectedAnswers.isEmpty()) {
+                    q.copy(selectedAnswers = prevQ.selectedAnswers)
+                } else {
+                    q
+                }
+            }
+            return incoming.copy(
+                isQuestionAnswered = true,
+                questions = if (mergedQuestions.isNotEmpty()) mergedQuestions else prevAskStep.questions
+            )
+        }
+        return incoming
     }
 
     @Volatile
@@ -867,6 +898,7 @@ class ChatViewModel @Inject constructor(
                                 )
                             }
                             appDao.insertSteps(listOf(message.step.toEntity(targetCid, newSteps.size - 1)))
+                            appDao.updateStepCount(targetCid, newSteps.size)
                         } catch (e: Exception) {
                             android.util.Log.e("ChatViewModel", "Safe DB insert error", e)
                         }
@@ -913,9 +945,18 @@ class ChatViewModel @Inject constructor(
                         state.steps.toMutableList()
                     }
                     val prevMaxStepIdx = lastStepIndex
+                    val replacedStepIndices = HashSet<Int>()
+                    val lastInsertIndexMap = HashMap<Int, Int>()
+                    val prevAskStepMap = HashMap<Int, TrajectoryStep>()
+                    state.steps.filter { it.stepCase == StepCase.ASK_QUESTION && it.isQuestionAnswered }.forEach {
+                        if (it.stepIndex >= 0) {
+                            prevAskStepMap[it.stepIndex] = it
+                        }
+                    }
 
                     message.steps.forEach { batchStep ->
                         val stepIdx = batchStep.step.stepIndex
+                        val stepWithAskMerged = mergeAskQuestionState(batchStep.step, prevAskStepMap[stepIdx])
                         if (!isFullReplace) {
                             if (batchStep.step.stepCase == StepCase.USER_INPUT) {
                                 val optIdx = newSteps.indexOfFirst {
@@ -928,34 +969,46 @@ class ChatViewModel @Inject constructor(
                                     }
                                     return@forEach
                                 }
-                            }
-                            if (stepIdx >= 0 && stepIdx <= prevMaxStepIdx) {
-                                val existingIdx = newSteps.indexOfFirst {
-                                    it.stepIndex == stepIdx && it.stepCase == batchStep.step.stepCase
+                            } else if (stepIdx >= 0) {
+                                val optAssistantIdx = newSteps.indexOfLast {
+                                    it.stepIndex < 0 && (it.stepCase == StepCase.TEXT || it.stepCase == StepCase.MARKDOWN_CHUNK) &&
+                                        !it.value.isNullOrBlank() && (it.value?.trim() == batchStep.step.value?.trim() ||
+                                         batchStep.step.value?.contains(it.value!!.trim()) == true)
                                 }
-                                if (existingIdx >= 0) {
-                                    val prevStep = newSteps[existingIdx]
-                                    val mergedStep = if (
-                                        prevStep.stepCase == StepCase.ASK_QUESTION &&
-                                        prevStep.isQuestionAnswered &&
-                                        !batchStep.step.isQuestionAnswered
-                                    ) {
-                                        val mergedQuestions = batchStep.step.questions.mapIndexed { qIdx, q ->
-                                            val prevQ = prevStep.questions.getOrNull(qIdx)
-                                            if (prevQ != null && prevQ.selectedAnswers.isNotEmpty() && q.selectedAnswers.isEmpty()) {
-                                                q.copy(selectedAnswers = prevQ.selectedAnswers)
-                                            } else {
-                                                q
-                                            }
-                                        }
-                                        batchStep.step.copy(
-                                            isQuestionAnswered = true,
-                                            questions = if (mergedQuestions.isNotEmpty()) mergedQuestions else prevStep.questions
-                                        )
+                                if (optAssistantIdx >= 0) {
+                                    newSteps.removeAt(optAssistantIdx)
+                                }
+                            }
+
+                            if (stepIdx >= 0 && stepIdx <= prevMaxStepIdx) {
+                                if (replacedStepIndices.add(stepIdx)) {
+                                    val firstExistingIdx = newSteps.indexOfFirst { it.stepIndex == stepIdx }
+                                    if (firstExistingIdx >= 0) {
+                                        newSteps.removeAll { it.stepIndex == stepIdx }
+                                        newSteps.add(firstExistingIdx, stepWithAskMerged)
+                                        lastInsertIndexMap[stepIdx] = firstExistingIdx
                                     } else {
-                                        batchStep.step
+                                        val nextHigherIdx = newSteps.indexOfFirst { it.stepIndex > stepIdx }
+                                        val insertAt = if (nextHigherIdx >= 0) nextHigherIdx else newSteps.size
+                                        newSteps.add(insertAt, stepWithAskMerged)
+                                        lastInsertIndexMap[stepIdx] = insertAt
                                     }
-                                    newSteps[existingIdx] = mergedStep
+                                    if (stepIdx > lastStepIndex) {
+                                        lastStepIndex = stepIdx
+                                    }
+                                    return@forEach
+                                } else {
+                                    val prevInsertIdx = lastInsertIndexMap[stepIdx]
+                                    val nextInsertIdx = if (prevInsertIdx != null) {
+                                        (prevInsertIdx + 1).coerceAtMost(newSteps.size)
+                                    } else {
+                                        newSteps.size
+                                    }
+                                    newSteps.add(nextInsertIdx, stepWithAskMerged)
+                                    lastInsertIndexMap[stepIdx] = nextInsertIdx
+                                    if (stepIdx > lastStepIndex) {
+                                        lastStepIndex = stepIdx
+                                    }
                                     return@forEach
                                 }
                             }
@@ -964,9 +1017,9 @@ class ChatViewModel @Inject constructor(
                             lastStepIndex = stepIdx
                         }
                         if (batchStep.index >= 0 && batchStep.index < newSteps.size) {
-                            newSteps[batchStep.index] = batchStep.step
+                            newSteps[batchStep.index] = stepWithAskMerged
                         } else {
-                            newSteps.add(batchStep.step)
+                            newSteps.add(stepWithAskMerged)
                         }
                     }
 
@@ -1015,6 +1068,10 @@ class ChatViewModel @Inject constructor(
                                         )
                                     )
                                 }
+                                if (isFullReplace) {
+                                    appDao.deleteStepsFromIndex(cidToSave, newSteps.size)
+                                }
+                                appDao.updateStepCount(cidToSave, newSteps.size)
                                 appDao.insertSteps(newSteps.mapIndexed { idx, s -> s.toEntity(cidToSave, idx) })
                             } catch (e: Exception) {
                                 android.util.Log.e("ChatViewModel", "Safe DB batch insert error", e)

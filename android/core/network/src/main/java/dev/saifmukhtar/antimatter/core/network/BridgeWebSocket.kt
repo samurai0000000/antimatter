@@ -65,6 +65,7 @@ class BridgeWebSocket(private val context: Context) {
     private var pubKey: String? = null
     private var reconnectAttempt = 0
     private val isConnecting = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val isFetchingHistory = java.util.concurrent.atomic.AtomicBoolean(false)
     private var manuallyDisconnected = false
 
     private var pendingChallenge: ByteArray? = null
@@ -549,11 +550,13 @@ class BridgeWebSocket(private val context: Context) {
                                             _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
                                         } else if (json.has("response") && json.get("response").isJsonPrimitive) {
                                             val respText = json.get("response").asString
-                                            _messages.emit(InboundMessage.Step(
-                                                step = TrajectoryStep(case = "text", value = respText),
-                                                index = -1,
-                                                agentId = message.agentId ?: "antigravity"
-                                            ))
+                                            if (cid.isBlank() || cid == "new") {
+                                                _messages.emit(InboundMessage.Step(
+                                                    step = TrajectoryStep(case = "text", value = respText),
+                                                    index = -1,
+                                                    agentId = message.agentId ?: "antigravity"
+                                                ))
+                                            }
                                             _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
                                         }
                                     }
@@ -933,6 +936,9 @@ class BridgeWebSocket(private val context: Context) {
 
     private suspend fun fetchHttpConversations(query: String = "") {
         val base = currentUrl ?: return
+        if (query.isBlank()) {
+            if (!isFetchingHistory.compareAndSet(false, true)) return
+        }
         try {
             val qParam = if (query.isNotBlank()) {
                 "?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
@@ -958,6 +964,10 @@ class BridgeWebSocket(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.w("BridgeWebSocket", "Failed to fetch HTTP conversations", e)
+        } finally {
+            if (query.isBlank()) {
+                isFetchingHistory.set(false)
+            }
         }
     }
 

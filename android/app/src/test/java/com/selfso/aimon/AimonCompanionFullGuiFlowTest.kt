@@ -1801,5 +1801,125 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals(StepCase.TEXT, singleStep.step.stepCase)
         assertEquals("Done!", singleStep.step.displayText)
     }
+
+    @Test
+    fun testMultiToolCallStepReplacementRoomTruncationAndAssistantDeduplication() = runBlocking {
+        registerRoute("/api/agent/transcript", requireToken = "tok-live-verified-001") { req ->
+            val since = req.query?.substringAfter("since=")?.toIntOrNull() ?: -1
+            if (since < 0) {
+                // Initial load: 1 user prompt, 1 thinking, and 1 initial tool call
+                """
+                {
+                  "conversationId": "conv-slice-01",
+                  "source": "cli",
+                  "model": "gemini-4-argon-high",
+                  "stepCount": 2,
+                  "steps": [
+                    {
+                      "stepIndex": 0,
+                      "type": "USER_INPUT",
+                      "text": "Perform multi-step refactoring"
+                    },
+                    {
+                      "stepIndex": 1,
+                      "type": "PLANNER_RESPONSE",
+                      "thinking": "Refactoring step 1 in progress",
+                      "tool_calls": [
+                        {"name": "read_file", "arguments": "{\"path\":\"A.kt\"}"}
+                      ]
+                    }
+                  ]
+                }
+                """.trimIndent()
+            } else {
+                // Incremental poll for step 1 replacement: expands to 3 tool calls sharing stepIndex 1
+                """
+                {
+                  "conversationId": "conv-slice-01",
+                  "source": "cli",
+                  "model": "gemini-4-argon-high",
+                  "stepCount": 3,
+                  "steps": [
+                    {
+                      "stepIndex": 1,
+                      "type": "PLANNER_RESPONSE",
+                      "thinking": "Refactoring step 1 expanded",
+                      "tool_calls": [
+                        {"name": "read_file", "arguments": "{\"path\":\"A.kt\"}"},
+                        {"name": "edit_file", "arguments": "{\"path\":\"A.kt\"}"},
+                        {"name": "run_command", "arguments": "{\"command\":\"make test\"}"}
+                      ]
+                    },
+                    {
+                      "stepIndex": 2,
+                      "type": "PLANNER_RESPONSE",
+                      "text": "Refactoring completed successfully"
+                    }
+                  ]
+                }
+                """.trimIndent()
+            }
+        }
+
+        val deletedFromIndexList = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Int>>()
+        val updatedStepCounts = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Int>>()
+        val mockUserPrefs = mock(UserPreferencesRepository::class.java)
+        val mockDao = mock(AppDao::class.java)
+
+        `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getAllConversationsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+        `when`(mockDao.getAllConversationsSnapshot()).thenReturn(emptyList())
+        `when`(mockDao.deleteStepsFromIndex(anyString(), anyInt())).thenAnswer { inv ->
+            deletedFromIndexList.add(inv.getArgument<String>(0) to inv.getArgument<Int>(1))
+            Unit
+        }
+        `when`(mockDao.updateStepCount(anyString(), anyInt())).thenAnswer { inv ->
+            updatedStepCounts.add(inv.getArgument<String>(0) to inv.getArgument<Int>(1))
+            Unit
+        }
+
+        val bridgeWebSocket = BridgeWebSocket(mockApplication)
+        val chatVm = ChatViewModel(mockApplication, bridgeWebSocket, mockUserPrefs, mockDao)
+        chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
+
+        // 1. Subscribe to conversation and verify initial load
+        chatVm.selectConversation("conv-slice-01")
+        waitUntil { chatVm.uiState.value.steps.size >= 3 }
+
+        val initialSteps = chatVm.uiState.value.steps
+        assertEquals(3, initialSteps.size)
+        assertEquals(StepCase.USER_INPUT, initialSteps[0].stepCase)
+        assertEquals(StepCase.PLANNER_RESPONSE, initialSteps[1].stepCase)
+        assertEquals(StepCase.TOOL_CALL, initialSteps[2].stepCase)
+        assertEquals("read_file", initialSteps[2].tool)
+
+        // Verify Room step count and truncation were called during full replacement
+        assertTrue("deleteStepsFromIndex must be called on full replacement", deletedFromIndexList.any { it.first == "conv-slice-01" })
+        assertTrue("updateStepCount must be called on initial load", updatedStepCounts.any { it.first == "conv-slice-01" && it.second >= 3 })
+
+        // 2. Trigger incremental fetch with since = 1
+        chatVm.fetchTranscript("conv-slice-01", since = 1)
+        waitUntil { chatVm.uiState.value.steps.any { it.stepIndex == 2 } }
+
+        val finalSteps = chatVm.uiState.value.steps
+        // Step 0: USER_INPUT (stepIndex 0)
+        // Step 1: PLANNER_RESPONSE (stepIndex 1)
+        // Step 2: TOOL_CALL read_file (stepIndex 1)
+        // Step 3: TOOL_CALL edit_file (stepIndex 1)
+        // Step 4: TOOL_CALL run_command (stepIndex 1)
+        // Step 5: TEXT Refactoring completed successfully (stepIndex 2)
+        assertEquals(6, finalSteps.size)
+        val toolSteps = finalSteps.filter { it.stepCase == StepCase.TOOL_CALL }
+        assertEquals(3, toolSteps.size)
+        assertEquals("read_file", toolSteps[0].tool)
+        assertEquals("edit_file", toolSteps[1].tool)
+        assertEquals("run_command", toolSteps[2].tool)
+        assertTrue("All tool calls must share stepIndex 1", toolSteps.all { it.stepIndex == 1 })
+
+        val finalReply = finalSteps.first { it.stepIndex == 2 }
+        assertEquals("Refactoring completed successfully", finalReply.value)
+    }
 }
 

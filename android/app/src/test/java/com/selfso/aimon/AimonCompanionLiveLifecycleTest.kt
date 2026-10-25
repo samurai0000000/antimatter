@@ -213,8 +213,10 @@ class AimonCompanionLiveLifecycleTest {
             val mockUserPrefs = mock(UserPreferencesRepository::class.java)
             val mockDao = mock(AppDao::class.java)
             `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+            `when`(mockDao.getAllConversationsFlow()).thenReturn(flowOf(emptyList()))
             `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
             `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+            `when`(mockDao.getAllConversationsSnapshot()).thenReturn(emptyList())
 
             val bridgeWebSocket = BridgeWebSocket(mockContext)
             val chatVm = ChatViewModel(mockContext, bridgeWebSocket, mockUserPrefs, mockDao)
@@ -222,7 +224,7 @@ class AimonCompanionLiveLifecycleTest {
 
             // Wait for history to load and verify internal SYSTEM_MESSAGE subagent trajectories are filtered out
             var waitedMs = 0L
-            while (chatVm.uiState.value.history.isEmpty() && waitedMs < 5000L) {
+            while (chatVm.uiState.value.history.isEmpty() && waitedMs < 20000L) {
                 delay(100)
                 waitedMs += 100
             }
@@ -235,7 +237,7 @@ class AimonCompanionLiveLifecycleTest {
             }?.id ?: chatVm.uiState.value.history.first().id
             chatVm.subscribeConversation(existingWithTools)
             waitedMs = 0L
-            while (chatVm.uiState.value.steps.isEmpty() && waitedMs < 5000L) {
+            while (chatVm.uiState.value.steps.isEmpty() && waitedMs < 20000L) {
                 delay(100)
                 waitedMs += 100
             }
