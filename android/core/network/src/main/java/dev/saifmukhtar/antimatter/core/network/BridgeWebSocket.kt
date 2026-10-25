@@ -82,6 +82,54 @@ class BridgeWebSocket(private val context: Context) {
     private val pendingAcks = ConcurrentHashMap<String, PendingMessage>()
     private val notificationIdCounter = java.util.concurrent.atomic.AtomicInteger(0)
 
+    data class NetworkTraceEntry(
+        val tsMs: Long,
+        val reqId: String,
+        val method: String,
+        val path: String,
+        val status: Int,
+        val durationMs: Long,
+        val errorSnippet: String? = null
+    )
+
+    private val networkTraceBuffer = ArrayDeque<NetworkTraceEntry>(200)
+
+    private fun nextRequestId(): String = UUID.randomUUID().toString().substring(0, 12)
+
+    private fun recordNetworkTrace(
+        reqId: String,
+        method: String,
+        path: String,
+        status: Int,
+        durationMs: Long,
+        errorSnippet: String? = null
+    ) {
+        val sanitizedErr = errorSnippet?.take(200)
+        synchronized(networkTraceBuffer) {
+            if (networkTraceBuffer.size >= 200) {
+                networkTraceBuffer.removeFirst()
+            }
+            networkTraceBuffer.addLast(
+                NetworkTraceEntry(
+                    tsMs = System.currentTimeMillis(),
+                    reqId = reqId,
+                    method = method,
+                    path = path,
+                    status = status,
+                    durationMs = durationMs,
+                    errorSnippet = sanitizedErr
+                )
+            )
+        }
+    }
+
+    fun getNetworkDiagnosticsJson(): String {
+        val snapshot = synchronized(networkTraceBuffer) {
+            networkTraceBuffer.toList()
+        }
+        return gson.toJson(snapshot)
+    }
+
     // State flows
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     private fun updateConnectionState(newState: ConnectionState) {
@@ -458,9 +506,13 @@ class BridgeWebSocket(private val context: Context) {
                                 }
                             }
                             val reqBody = gson.toJson(payloadMap)
+                            val reqId = nextRequestId()
+                            val startMs = System.currentTimeMillis()
                             val req = Request.Builder()
                                 .url("$url/api/agent/prompt")
                                 .header("User-Agent", "aimon-mobile/1.0")
+                                .header("X-Request-Id", reqId)
+                                .header("X-Client-Meta", "android")
                                 .apply {
                                     if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
@@ -470,8 +522,10 @@ class BridgeWebSocket(private val context: Context) {
                                 .post(reqBody.toRequestBody("application/json".toMediaType()))
                                 .build()
                             val resp = client.newCall(req).execute()
+                            val durationMs = System.currentTimeMillis() - startMs
                             val body = resp.body?.string() ?: ""
                             if (resp.isSuccessful) {
+                                recordNetworkTrace(reqId, "POST", "/api/agent/prompt", resp.code, durationMs, null)
                                 _messages.emit(InboundMessage.Ack(message.id ?: ""))
 
                                 try {
@@ -575,10 +629,11 @@ class BridgeWebSocket(private val context: Context) {
                                     null
                                 }
                                 val errMsg = if (!errDetail.isNullOrBlank()) {
-                                    errDetail
+                                    "$errDetail (req=$reqId)"
                                 } else {
-                                    "Failed to send prompt: HTTP ${resp.code}"
+                                    "Failed to send prompt: HTTP ${resp.code} (req=$reqId)"
                                 }
+                                recordNetworkTrace(reqId, "POST", "/api/agent/prompt", resp.code, durationMs, errMsg)
                                 _messages.emit(InboundMessage.Error(errMsg, agentId = message.agentId))
                                 _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId ?: "antigravity"))
                             }
@@ -611,9 +666,13 @@ class BridgeWebSocket(private val context: Context) {
                             } else {
                                 ""
                             }
+                            val reqId = nextRequestId()
+                            val startMs = System.currentTimeMillis()
                             val req = Request.Builder()
                                 .url("$url/api/agent/transcript?id=${message.conversationId}$sinceParam")
                                 .header("User-Agent", "aimon-mobile/1.0")
+                                .header("X-Request-Id", reqId)
+                                .header("X-Client-Meta", "android")
                                 .apply {
                                     if (!token.isNullOrBlank()) {
                                         header("X-Mobile-Token", token!!)
@@ -623,7 +682,16 @@ class BridgeWebSocket(private val context: Context) {
                                 .get()
                                 .build()
                             val resp = client.newCall(req).execute()
+                            val durationMs = System.currentTimeMillis() - startMs
                             val body = resp.body?.string() ?: ""
+                            recordNetworkTrace(
+                                reqId,
+                                "GET",
+                                "/api/agent/transcript",
+                                resp.code,
+                                durationMs,
+                                if (!resp.isSuccessful) "HTTP ${resp.code}" else null
+                            )
                             if (resp.isSuccessful) {
                                 val json = JsonParser.parseString(body).asJsonObject
                                 val cid = if (json.has("conversationId") && !json.get("conversationId").isJsonNull) {
@@ -646,9 +714,13 @@ class BridgeWebSocket(private val context: Context) {
                                 val steps = parseTranscriptStepsFromJson(json, message.agentId)
 
                                 if (message.sinceStepIndex != null && message.sinceStepIndex >= 0 && stepCount > 0 && stepCount <= message.sinceStepIndex) {
+                                    val fullReqId = nextRequestId()
+                                    val fullStartMs = System.currentTimeMillis()
                                     val fullReq = Request.Builder()
                                         .url("$url/api/agent/transcript?id=${message.conversationId}")
                                         .header("User-Agent", "aimon-mobile/1.0")
+                                        .header("X-Request-Id", fullReqId)
+                                        .header("X-Client-Meta", "android")
                                         .apply {
                                             if (!token.isNullOrBlank()) {
                                                 header("X-Mobile-Token", token!!)
@@ -658,7 +730,16 @@ class BridgeWebSocket(private val context: Context) {
                                         .get()
                                         .build()
                                     val fullResp = client.newCall(fullReq).execute()
+                                    val fullDurationMs = System.currentTimeMillis() - fullStartMs
                                     val fullBody = fullResp.body?.string() ?: ""
+                                    recordNetworkTrace(
+                                        fullReqId,
+                                        "GET",
+                                        "/api/agent/transcript",
+                                        fullResp.code,
+                                        fullDurationMs,
+                                        if (!fullResp.isSuccessful) "HTTP ${fullResp.code}" else null
+                                    )
                                     if (fullResp.isSuccessful) {
                                         val fullJson = JsonParser.parseString(fullBody).asJsonObject
                                         val fullCid = if (fullJson.has("conversationId") && !fullJson.get("conversationId").isJsonNull) {
@@ -945,9 +1026,13 @@ class BridgeWebSocket(private val context: Context) {
             } else {
                 ""
             }
+            val reqId = nextRequestId()
+            val startMs = System.currentTimeMillis()
             val req = Request.Builder()
                 .url("$base/api/agent/conversations$qParam")
                 .header("User-Agent", "aimon-mobile/1.0")
+                .header("X-Request-Id", reqId)
+                .header("X-Client-Meta", "android")
                 .apply {
                     if (!token.isNullOrBlank()) {
                         header("X-Mobile-Token", token!!)
@@ -957,7 +1042,16 @@ class BridgeWebSocket(private val context: Context) {
                 .get()
                 .build()
             val resp = client.newCall(req).execute()
+            val durationMs = System.currentTimeMillis() - startMs
             val body = resp.body?.string() ?: ""
+            recordNetworkTrace(
+                reqId,
+                "GET",
+                "/api/agent/conversations",
+                resp.code,
+                durationMs,
+                if (!resp.isSuccessful) "HTTP ${resp.code}" else null
+            )
             if (resp.isSuccessful && body.isNotBlank()) {
                 val histMsg = parseHistoryListFromJson(body, isSearchResult = query.isNotBlank())
                 _messages.emit(histMsg)

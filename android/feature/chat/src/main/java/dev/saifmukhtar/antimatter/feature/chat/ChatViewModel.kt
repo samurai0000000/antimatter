@@ -375,6 +375,7 @@ class ChatViewModel @Inject constructor(
         val trimmed = title.trim()
         return trimmed.isEmpty() ||
             trimmed.equals("Chat", ignoreCase = true) ||
+            trimmed.startsWith("Active Cursor IDE session in ") ||
             Regex("^Conversation [0-9a-fA-F]{8}$").matches(trimmed)
     }
 
@@ -1147,9 +1148,12 @@ class ChatViewModel @Inject constructor(
             is InboundMessage.HistoryList -> {
                 android.util.Log.d("ChatViewModel", "Received HISTORY_LIST with ${message.conversations.size} conversations")
                 val validFiltered = message.conversations.filterNot { summary ->
-                    isPlaceholderOrSubagentTitle(summary.title) &&
-                        summary.firstPrompt.isBlank() &&
-                        summary.lastPrompt.isBlank()
+                    summary.id.startsWith("sess-") ||
+                        summary.id == "current" ||
+                        summary.title.trim().startsWith("Active Cursor IDE session in ") ||
+                        (isPlaceholderOrSubagentTitle(summary.title) &&
+                            summary.firstPrompt.isBlank() &&
+                            summary.lastPrompt.isBlank())
                 }
                 if (!message.isSearchResult) {
                     hasSyncedServerHistory = true
