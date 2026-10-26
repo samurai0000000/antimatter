@@ -96,6 +96,7 @@ sealed class InboundMessage {
         val agentId: String? = null,
         val source: String = "",
         val workspace: String = "",
+        val workspacePath: String = "",
         val interactive: Boolean = true,
         val nonInteractiveReason: String = ""
     ) : InboundMessage()
@@ -131,7 +132,10 @@ sealed class InboundMessage {
 
     data class FileTree(
         val tree: List<FileNode> = emptyList(),
-        val workspace: String = ""
+        val workspace: String = "",
+        val workspaceAvailable: Boolean = true,
+        val reason: String = "",
+        val path: String = ""
     ) : InboundMessage()
     data class CloudflareUrl(val url: String = "", val agentId: String? = null) : InboundMessage()
     data class Error(val message: String = "", val agentId: String? = null) : InboundMessage()
@@ -190,8 +194,22 @@ sealed class OutboundMessage {
     data class PrevHunk(val type: String = "PREV_HUNK", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class AcceptHunk(val type: String = "ACCEPT_HUNK", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class RejectHunk(val type: String = "REJECT_HUNK", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
-    data class GetFiles(val path: String? = null, val type: String = "GET_FILES", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
-    data class ReadFile(val path: String, val type: String = "READ_FILE", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
+    data class GetFiles(
+        val path: String? = null,
+        val conversationId: String? = null,
+        val workspace: String? = null,
+        val type: String = "GET_FILES",
+        override val id: String? = null,
+        override val agentId: String? = null
+    ) : OutboundMessage()
+    data class ReadFile(
+        val path: String,
+        val conversationId: String? = null,
+        val workspace: String? = null,
+        val type: String = "READ_FILE",
+        override val id: String? = null,
+        override val agentId: String? = null
+    ) : OutboundMessage()
     data class SubscribeConversation(
         val conversationId: String,
         val lastKnownStepCount: Int? = null,
@@ -215,7 +233,15 @@ sealed class OutboundMessage {
     data class ReadArtifact(val conversationId: String, val path: String, val type: String = "READ_ARTIFACT", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class ListAgents(val type: String = "LIST_AGENTS", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     
-    data class WriteFile(val path: String, val content: String, val type: String = "WRITE_FILE", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
+    data class WriteFile(
+        val path: String,
+        val content: String,
+        val conversationId: String? = null,
+        val workspace: String? = null,
+        val type: String = "WRITE_FILE",
+        override val id: String? = null,
+        override val agentId: String? = null
+    ) : OutboundMessage()
     data class ChangeWorkspace(val path: String, val type: String = "CHANGE_WORKSPACE", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
 
     // PTY messages — type strings must be UPPERCASE to match the Gateway's pty_manager.py

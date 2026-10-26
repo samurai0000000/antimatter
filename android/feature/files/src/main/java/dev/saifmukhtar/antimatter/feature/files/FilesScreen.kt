@@ -34,7 +34,8 @@ fun FilesScreen(
     uiState: FilesUiState,
     onRefresh: () -> Unit,
     onOpenFile: (String) -> Unit,
-    onChangeWorkspace: (String) -> Unit
+    onChangeWorkspace: (String) -> Unit,
+    onExpandFolder: (String) -> Unit = {}
 ) {
     var expandedFolders by remember { mutableStateOf(setOf<String>()) }
 
@@ -81,10 +82,11 @@ fun FilesScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        text = uiState.currentWorkspace
-                                            ?.substringAfterLast("/")
-                                            ?.ifBlank { uiState.currentWorkspace }
-                                            ?: "aimon",
+                                        text = if (uiState.workspaceAvailable && !uiState.currentWorkspace.isNullOrBlank()) {
+                                            uiState.currentWorkspace.substringAfterLast("/").ifBlank { uiState.currentWorkspace }
+                                        } else {
+                                            "Unavailable"
+                                        },
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Color.White,
@@ -162,6 +164,34 @@ fun FilesScreen(
         ) {
             if (uiState.isLoadingTree) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            } else if (!uiState.workspaceAvailable || uiState.currentWorkspace.isNullOrBlank()) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        Icons.Default.FolderOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = Color(0xFF6B7280)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Workspace isn't available",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFE5E7EB)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = uiState.unavailableReason ?: "Workspace information for the selected session is not available.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF9CA3AF),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
             } else if (uiState.fileTree.isNullOrEmpty()) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
@@ -198,7 +228,8 @@ fun FilesScreen(
                                     expandedFolders + path
                                 }
                             },
-                            onOpenFile = onOpenFile
+                            onOpenFile = onOpenFile,
+                            onExpandFolder = onExpandFolder
                         )
                     }
                 }
@@ -213,7 +244,8 @@ fun FileTreeNode(
     depth: Int,
     expandedFolders: Set<String>,
     onToggleFolder: (String) -> Unit,
-    onOpenFile: (String) -> Unit
+    onOpenFile: (String) -> Unit,
+    onExpandFolder: (String) -> Unit = {}
 ) {
     val isExpanded = expandedFolders.contains(node.path)
 
@@ -227,6 +259,9 @@ fun FileTreeNode(
                 )
                 .clickable {
                     if (node.isDir) {
+                        if (!isExpanded && node.children == null) {
+                            onExpandFolder(node.path)
+                        }
                         onToggleFolder(node.path)
                     } else {
                         onOpenFile(node.path)
@@ -278,7 +313,8 @@ fun FileTreeNode(
                     depth = depth + 1,
                     expandedFolders = expandedFolders,
                     onToggleFolder = onToggleFolder,
-                    onOpenFile = onOpenFile
+                    onOpenFile = onOpenFile,
+                    onExpandFolder = onExpandFolder
                 )
             }
         }

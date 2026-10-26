@@ -489,11 +489,22 @@ class AimonCompanionFullGuiFlowTest {
 
         registerRoute("/api/workspace/tree", requireToken = expectedToken) { rec ->
             val q = rec.query ?: ""
-            if (q.contains("path=src%2Fnested")) {
+            if (q.contains("conversationId=conv-no-ws") || (!q.contains("conversationId=") && !q.contains("workspace="))) {
+                """
+                {
+                  "type": "FILE_TREE",
+                  "workspace": "",
+                  "workspaceAvailable": false,
+                  "reason": "Workspace information is not available for the selected session.",
+                  "tree": []
+                }
+                """.trimIndent()
+            } else if (q.contains("path=src%2Fnested")) {
                 """
                 {
                   "type": "FILE_TREE",
                   "workspace": "~/work/aimon",
+                  "workspaceAvailable": true,
                   "tree": [
                     {"name": "DeepModule.cxx", "path": "src/nested/DeepModule.cxx", "type": "file"}
                   ]
@@ -504,6 +515,7 @@ class AimonCompanionFullGuiFlowTest {
                 {
                   "type": "FILE_TREE",
                   "workspace": "~/work/aimon",
+                  "workspaceAvailable": true,
                   "tree": [
                     {
                       "name": "src",
@@ -860,7 +872,27 @@ class AimonCompanionFullGuiFlowTest {
 
         filesVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
 
-        waitUntil { filesVm.uiState.value.fileTree != null }
+        // 1. Verify before session selection (or with "new") that workspace is unavailable and currentWorkspace is null
+        assertFalse(filesVm.uiState.value.workspaceAvailable)
+        assertNull(filesVm.uiState.value.currentWorkspace)
+
+        filesVm.syncWithSelectedSession("new", null)
+        assertFalse(filesVm.uiState.value.workspaceAvailable)
+        assertNull(filesVm.uiState.value.currentWorkspace)
+
+        // 2. Verify selecting a session with no workspace metadata results in workspaceAvailable == false and unavailableReason containing "not available"
+        filesVm.syncWithSelectedSession("conv-no-ws", null)
+        waitUntil { !filesVm.uiState.value.isLoadingTree && filesVm.uiState.value.activeConversationId == "conv-no-ws" }
+        assertFalse(filesVm.uiState.value.workspaceAvailable)
+        assertNull(filesVm.uiState.value.currentWorkspace)
+        assertTrue(filesVm.uiState.value.unavailableReason?.contains("not available", ignoreCase = true) == true)
+
+        // 3. Select active session with workspace metadata
+        filesVm.syncWithSelectedSession("conv-live-001", "~/work/aimon")
+        waitUntil { filesVm.uiState.value.workspaceAvailable && filesVm.uiState.value.fileTree != null }
+        assertTrue(filesVm.uiState.value.workspaceAvailable)
+        assertEquals("~/work/aimon", filesVm.uiState.value.currentWorkspace)
+
         val rootTree = filesVm.uiState.value.fileTree!!
         assertEquals(2, rootTree.size)
         val srcNode = rootTree.first { it.name == "src" }
@@ -885,6 +917,16 @@ class AimonCompanionFullGuiFlowTest {
         val postReq = recordedRequests.first { it.path == "/api/workspace/file" && it.method == "POST" }
         assertEquals("tok-live-verified-001", postReq.mobileToken)
         assertTrue(postReq.body.contains("make test"))
+
+        // Verify conversationId=conv-live-001 was passed in tree, read, and write requests
+        val treeReqs = recordedRequests.filter { it.path == "/api/workspace/tree" }
+        assertTrue(treeReqs.any { it.query?.contains("conversationId=conv-live-001") == true })
+
+        val fileGetReqs = recordedRequests.filter { it.path == "/api/workspace/file" && it.method == "GET" }
+        assertTrue(fileGetReqs.any { it.query?.contains("conversationId=conv-live-001") == true })
+
+        val filePostReqs = recordedRequests.filter { it.path == "/api/workspace/file" && it.method == "POST" }
+        assertTrue(filePostReqs.any { it.body.contains("conv-live-001") })
     }
 
     private fun sha256Hex(bytes: ByteArray): String {

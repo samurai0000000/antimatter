@@ -550,6 +550,7 @@ class BridgeWebSocket(private val context: Context) {
                                         val parsedSteps = parseTranscriptStepsFromJson(json, message.agentId ?: "antigravity")
                                         val resolvedCompactedCid = cid.ifBlank { reqCid }
                                         val respWorkspace = optJsonString(json, "workspace") ?: ""
+                                        val respWorkspacePath = optJsonString(json, "workspacePath") ?: ""
                                         val respInteractive = optJsonBool(json, "interactive", true)
                                         val respNonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
                                         _messages.emit(InboundMessage.SessionState(
@@ -559,6 +560,7 @@ class BridgeWebSocket(private val context: Context) {
                                             agentId = message.agentId ?: "antigravity",
                                             source = respSource,
                                             workspace = respWorkspace,
+                                            workspacePath = respWorkspacePath,
                                             interactive = respInteractive,
                                             nonInteractiveReason = respNonInteractiveReason
                                         ))
@@ -715,6 +717,7 @@ class BridgeWebSocket(private val context: Context) {
                                 }
                                 val source = optJsonString(json, "source") ?: ""
                                 val workspace = optJsonString(json, "workspace") ?: ""
+                                val workspacePath = optJsonString(json, "workspacePath") ?: ""
                                 val isInteractive = optJsonBool(json, "interactive", true)
                                 val nonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
                                 val steps = parseTranscriptStepsFromJson(json, message.agentId)
@@ -765,6 +768,7 @@ class BridgeWebSocket(private val context: Context) {
                                         }
                                         val fullSource = optJsonString(fullJson, "source") ?: source
                                         val fullWorkspace = optJsonString(fullJson, "workspace") ?: workspace
+                                        val fullWorkspacePath = optJsonString(fullJson, "workspacePath") ?: workspacePath
                                         val fullInteractive = optJsonBool(fullJson, "interactive", isInteractive)
                                         val fullNonInteractiveReason = optJsonString(fullJson, "nonInteractiveReason") ?: nonInteractiveReason
                                         val fullSteps = parseTranscriptStepsFromJson(fullJson, message.agentId)
@@ -775,6 +779,7 @@ class BridgeWebSocket(private val context: Context) {
                                             agentId = message.agentId,
                                             source = fullSource,
                                             workspace = fullWorkspace,
+                                            workspacePath = fullWorkspacePath,
                                             interactive = fullInteractive,
                                             nonInteractiveReason = fullNonInteractiveReason
                                         ))
@@ -793,6 +798,7 @@ class BridgeWebSocket(private val context: Context) {
                                             agentId = message.agentId,
                                             source = source,
                                             workspace = workspace,
+                                            workspacePath = workspacePath,
                                             interactive = isInteractive,
                                             nonInteractiveReason = nonInteractiveReason
                                         ))
@@ -853,7 +859,17 @@ class BridgeWebSocket(private val context: Context) {
                             }
                         }
                         is OutboundMessage.GetFiles -> {
-                            val pathQuery = if (!message.path.isNullOrBlank()) "?path=${java.net.URLEncoder.encode(message.path, "UTF-8")}" else ""
+                            val params = mutableListOf<String>()
+                            if (!message.path.isNullOrBlank()) {
+                                params.add("path=${java.net.URLEncoder.encode(message.path, "UTF-8")}")
+                            }
+                            if (!message.conversationId.isNullOrBlank()) {
+                                params.add("conversationId=${java.net.URLEncoder.encode(message.conversationId, "UTF-8")}")
+                            }
+                            if (!message.workspace.isNullOrBlank()) {
+                                params.add("workspace=${java.net.URLEncoder.encode(message.workspace, "UTF-8")}")
+                            }
+                            val pathQuery = if (params.isNotEmpty()) "?${params.joinToString("&")}" else ""
                             val req = Request.Builder()
                                 .url("$url/api/workspace/tree$pathQuery")
                                 .header("User-Agent", "aimon-mobile/1.0")
@@ -873,8 +889,17 @@ class BridgeWebSocket(private val context: Context) {
                             }
                         }
                         is OutboundMessage.ReadFile -> {
+                            val params = mutableListOf<String>()
+                            params.add("path=${java.net.URLEncoder.encode(message.path, "UTF-8")}")
+                            if (!message.conversationId.isNullOrBlank()) {
+                                params.add("conversationId=${java.net.URLEncoder.encode(message.conversationId, "UTF-8")}")
+                            }
+                            if (!message.workspace.isNullOrBlank()) {
+                                params.add("workspace=${java.net.URLEncoder.encode(message.workspace, "UTF-8")}")
+                            }
+                            val query = "?${params.joinToString("&")}"
                             val req = Request.Builder()
-                                .url("$url/api/workspace/file?path=${java.net.URLEncoder.encode(message.path, "UTF-8")}")
+                                .url("$url/api/workspace/file$query")
                                 .header("User-Agent", "aimon-mobile/1.0")
                                 .apply {
                                     if (!token.isNullOrBlank()) {
@@ -892,10 +917,17 @@ class BridgeWebSocket(private val context: Context) {
                             }
                         }
                         is OutboundMessage.WriteFile -> {
-                            val reqBody = gson.toJson(mapOf(
+                            val bodyMap = mutableMapOf<String, Any>(
                                 "path" to message.path,
                                 "content" to message.content
-                            ))
+                            )
+                            if (!message.conversationId.isNullOrBlank()) {
+                                bodyMap["conversationId"] = message.conversationId
+                            }
+                            if (!message.workspace.isNullOrBlank()) {
+                                bodyMap["workspace"] = message.workspace
+                            }
+                            val reqBody = gson.toJson(bodyMap)
                             val req = Request.Builder()
                                 .url("$url/api/workspace/file")
                                 .header("User-Agent", "aimon-mobile/1.0")
@@ -1192,6 +1224,7 @@ class BridgeWebSocket(private val context: Context) {
             val stepCount = optJsonInt(json, "stepCount") ?: 0
             val source = optJsonString(json, "source") ?: ""
             val workspace = optJsonString(json, "workspace") ?: ""
+            val workspacePath = optJsonString(json, "workspacePath") ?: ""
             val interactive = optJsonBool(json, "interactive", true)
             val nonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
             return InboundMessage.SessionState(
@@ -1201,6 +1234,7 @@ class BridgeWebSocket(private val context: Context) {
                 agentId = agentId,
                 source = source,
                 workspace = workspace,
+                workspacePath = workspacePath,
                 interactive = interactive,
                 nonInteractiveReason = nonInteractiveReason
             )

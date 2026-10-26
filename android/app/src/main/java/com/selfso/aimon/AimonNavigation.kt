@@ -116,6 +116,15 @@ fun AimonNavigation(
         AimonAppPreferences.activeConversationId = chatUiState.conversationId
     }
 
+    LaunchedEffect(currentTab, chatUiState.conversationId, chatUiState.activeWorkspacePath) {
+        if (currentTab == 3) {
+            filesViewModel.syncWithSelectedSession(
+                conversationId = chatUiState.conversationId,
+                workspacePath = chatUiState.activeWorkspacePath
+            )
+        }
+    }
+
     LaunchedEffect(updateState) {
         if (updateState is UpdateState.Downloading) {
             updateController.hideDialog()
@@ -507,7 +516,13 @@ fun AimonNavigation(
                         3 -> {
                             FilesScreen(
                                 uiState = filesUiState,
-                                onRefresh = { filesViewModel.loadFileTree() },
+                                onRefresh = {
+                                    filesViewModel.syncWithSelectedSession(
+                                        conversationId = chatUiState.conversationId,
+                                        workspacePath = chatUiState.activeWorkspacePath,
+                                        forceRefresh = true
+                                    )
+                                },
                                 onOpenFile = { path -> filesViewModel.openFile(path) },
                                 onChangeWorkspace = { path ->
                                     (context as? MainActivity)?.showBiometricPrompt { success ->
@@ -515,7 +530,8 @@ fun AimonNavigation(
                                             filesViewModel.changeWorkspace(path)
                                         }
                                     }
-                                }
+                                },
+                                onExpandFolder = { dirPath -> filesViewModel.expandDirectory(dirPath) }
                             )
                         }
                         4 -> {

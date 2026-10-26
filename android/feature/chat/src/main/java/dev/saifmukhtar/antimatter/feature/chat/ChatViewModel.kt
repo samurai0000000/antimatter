@@ -97,6 +97,8 @@ data class ChatUiState(
     val conversationModel: String = "",
     val activeProvider: String = "antigravity",
     val activeSessionSource: String = "",
+    val activeWorkspace: String = "",
+    val activeWorkspacePath: String = "",
     val isSessionInteractive: Boolean = true,
     val nonInteractiveReason: String = "",
     val error: String? = null,
@@ -812,6 +814,8 @@ class ChatViewModel @Inject constructor(
                             conversationModel = "",
                             activeProvider = preservedProv,
                             activeSessionSource = message.source.ifBlank { it.activeSessionSource },
+                            activeWorkspace = "",
+                            activeWorkspacePath = "",
                             isSessionInteractive = true,
                             nonInteractiveReason = "",
                             focusedOriginalStepIndex = null,
@@ -828,6 +832,12 @@ class ChatViewModel @Inject constructor(
                 val resolvedSource = message.source.ifBlank {
                     message.conversationId?.let { richSummaryMap[it]?.source } ?: ""
                 }
+                val resolvedWorkspace = message.workspace.ifBlank {
+                    message.conversationId?.let { richSummaryMap[it]?.workspace } ?: ""
+                }
+                val resolvedWorkspacePath = message.workspacePath.ifBlank {
+                    message.conversationId?.let { richSummaryMap[it]?.workspacePath } ?: ""
+                }
                 val updatedProvider = when (resolvedSource.trim().lowercase()) {
                     "claude" -> "claude"
                     "cursor" -> "cursor"
@@ -841,6 +851,8 @@ class ChatViewModel @Inject constructor(
                         currentModel = message.model.ifBlank { it.currentModel },
                         conversationModel = resolvedConvModel.ifBlank { it.conversationModel },
                         activeSessionSource = resolvedSource.ifBlank { it.activeSessionSource },
+                        activeWorkspace = resolvedWorkspace.ifBlank { it.activeWorkspace },
+                        activeWorkspacePath = resolvedWorkspacePath.ifBlank { it.activeWorkspacePath },
                         activeProvider = updatedProvider ?: it.activeProvider,
                         isSessionInteractive = message.interactive,
                         nonInteractiveReason = message.nonInteractiveReason,
@@ -857,6 +869,7 @@ class ChatViewModel @Inject constructor(
                             source = resolvedSource.ifBlank { existingSummary.source },
                             model = resolvedConvModel.ifBlank { existingSummary.model },
                             workspace = message.workspace.ifBlank { existingSummary.workspace },
+                            workspacePath = message.workspacePath.ifBlank { existingSummary.workspacePath },
                             stepCount = maxOf(existingSummary.stepCount, message.stepCount),
                             interactive = message.interactive,
                             nonInteractiveReason = message.nonInteractiveReason
@@ -868,6 +881,7 @@ class ChatViewModel @Inject constructor(
                             timestamp = System.currentTimeMillis(),
                             source = resolvedSource.ifBlank { "CLI" },
                             workspace = message.workspace,
+                            workspacePath = message.workspacePath,
                             model = resolvedConvModel,
                             stepCount = message.stepCount,
                             interactive = message.interactive,
@@ -1184,6 +1198,17 @@ class ChatViewModel @Inject constructor(
                 }
                 validFiltered.forEach { summary ->
                     richSummaryMap[summary.id] = mergeSummaryWithRich(summary)
+                }
+                val curCid = _uiState.value.conversationId
+                if (!curCid.isNullOrBlank() && curCid != "new") {
+                    richSummaryMap[curCid]?.let { curSummary ->
+                        _uiState.update { state ->
+                            state.copy(
+                                activeWorkspace = state.activeWorkspace.ifBlank { curSummary.workspace },
+                                activeWorkspacePath = state.activeWorkspacePath.ifBlank { curSummary.workspacePath }
+                            )
+                        }
+                    }
                 }
                 rebuildHistoryFromMap()
                 viewModelScope.launch(Dispatchers.IO) {
@@ -1749,6 +1774,8 @@ class ChatViewModel @Inject constructor(
                 error = null,
                 activeProvider = targetProv,
                 activeSessionSource = if (preserveCurrentProvider) targetProv else "",
+                activeWorkspace = "",
+                activeWorkspacePath = "",
                 isSessionInteractive = true,
                 nonInteractiveReason = "",
                 selectedModel = defaultModel,
@@ -1775,6 +1802,8 @@ class ChatViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 conversationId = id,
+                activeWorkspace = initialMatchedConv?.workspace ?: "",
+                activeWorkspacePath = initialMatchedConv?.workspacePath ?: "",
                 isSessionInteractive = initialMatchedConv?.interactive ?: true,
                 nonInteractiveReason = initialMatchedConv?.nonInteractiveReason ?: "",
                 error = null
@@ -1837,6 +1866,8 @@ class ChatViewModel @Inject constructor(
                     error = null,
                     activeProvider = inferredProvider,
                     activeSessionSource = convSource,
+                    activeWorkspace = matchedConv?.workspace ?: it.activeWorkspace,
+                    activeWorkspacePath = matchedConv?.workspacePath ?: it.activeWorkspacePath,
                     isSessionInteractive = matchedConv?.interactive ?: it.isSessionInteractive,
                     nonInteractiveReason = matchedConv?.nonInteractiveReason ?: it.nonInteractiveReason,
                     selectedModel = "default",
