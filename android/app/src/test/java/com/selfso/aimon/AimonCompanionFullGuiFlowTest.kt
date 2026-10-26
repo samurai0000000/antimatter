@@ -36,8 +36,10 @@ import dev.saifmukhtar.antimatter.feature.chat.SpeechDictationSession
 import dev.saifmukhtar.antimatter.feature.chat.computeMaxPromptInputHeightDp
 import dev.saifmukhtar.antimatter.feature.chat.effectivePlaceholderForSession
 import dev.saifmukhtar.antimatter.feature.chat.groupSteps
+import dev.saifmukhtar.antimatter.feature.chat.isImageAttachmentSupportedForSession
 import dev.saifmukhtar.antimatter.feature.chat.mergeDictatedText
 import dev.saifmukhtar.antimatter.feature.chat.placeholderForProvider
+import dev.saifmukhtar.antimatter.feature.chat.resolveNonInteractiveBadgeTitle
 import dev.saifmukhtar.antimatter.feature.chat.resolveNonInteractiveBannerText
 import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalog
 import dev.saifmukhtar.antimatter.feature.chat.slashCommandCatalogForProvider
@@ -2141,6 +2143,29 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals("new", chatVm.uiState.value.conversationId)
         assertTrue(chatVm.uiState.value.isSessionInteractive)
         assertEquals("", chatVm.uiState.value.nonInteractiveReason)
+
+        // 6. Verify resolveNonInteractiveBadgeTitle and isImageAttachmentSupportedForSession
+        assertEquals(
+            "READ-ONLY TERMINAL SESSION",
+            resolveNonInteractiveBadgeTitle("Read-only terminal session (PID 3918694): not running inside a terminal multiplexer (GNU screen or tmux).")
+        )
+        assertEquals(
+            "INACTIVE CLI SESSION",
+            resolveNonInteractiveBadgeTitle("Inactive CLI session: no live process in screen or tmux.")
+        )
+        assertEquals(
+            "READ-ONLY IDE AGENT",
+            resolveNonInteractiveBadgeTitle(cursorReason)
+        )
+        assertEquals(
+            "READ-ONLY IDE AGENT",
+            resolveNonInteractiveBadgeTitle(claudeReason)
+        )
+        assertFalse(isImageAttachmentSupportedForSession("cursor", isInteractive = true))
+        assertFalse(isImageAttachmentSupportedForSession("claude", isInteractive = true))
+        assertFalse(isImageAttachmentSupportedForSession("antigravity", isInteractive = false))
+        assertTrue(isImageAttachmentSupportedForSession("antigravity", isInteractive = true))
+        assertTrue(isImageAttachmentSupportedForSession("ide", isInteractive = true))
     }
 }
 

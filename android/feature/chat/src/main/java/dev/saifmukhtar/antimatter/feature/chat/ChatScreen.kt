@@ -1700,6 +1700,9 @@ fun ConversationBrowserPanel(
     }
 }
 
+val ConversationSummary.status: String
+    get() = if (active) "RUNNING" else "IDLE"
+
 @Composable
 fun ConversationRichCard(
     conv: ConversationSummary,
@@ -1740,7 +1743,7 @@ fun ConversationRichCard(
                         textColor = Color(0xFF22D3EE)
                     )
                 }
-                if (conv.active) {
+                if (conv.active && !conv.status.equals("IDLE", ignoreCase = true)) {
                     MiniTagBadge(
                         text = "RUNNING",
                         bgColor = Color(0xFF064E3B),

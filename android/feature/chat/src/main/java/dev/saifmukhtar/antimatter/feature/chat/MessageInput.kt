@@ -215,6 +215,23 @@ fun effectivePlaceholderForSession(provider: String, isInteractive: Boolean): St
     return placeholderForProvider(provider)
 }
 
+fun isImageAttachmentSupportedForSession(provider: String, isInteractive: Boolean): Boolean {
+    if (!isInteractive) return false
+    return provider.trim().lowercase() !in setOf("cursor", "claude")
+}
+
+fun resolveNonInteractiveBadgeTitle(nonInteractiveReason: String): String {
+    val reason = nonInteractiveReason.trim()
+    return when {
+        reason.contains("terminal session", ignoreCase = true) ||
+            reason.contains("PID", ignoreCase = true) -> "READ-ONLY TERMINAL SESSION"
+        reason.contains("Inactive CLI session", ignoreCase = true) ||
+            reason.contains("exited", ignoreCase = true) ||
+            reason.contains("no live process", ignoreCase = true) -> "INACTIVE CLI SESSION"
+        else -> "READ-ONLY IDE AGENT"
+    }
+}
+
 fun resolveNonInteractiveBannerText(nonInteractiveReason: String): String {
     return nonInteractiveReason.ifBlank {
         "Bi-directional communication is not possible with this agent."
@@ -257,6 +274,14 @@ fun MessageInput(
     val providerCatalog = remember(activeProvider) { slashCommandCatalogForProvider(activeProvider) }
     val placeholderText = remember(activeProvider, isInteractive) {
         effectivePlaceholderForSession(activeProvider, isInteractive)
+    }
+    val isImageAttachmentSupported = remember(activeProvider, isInteractive) {
+        isImageAttachmentSupportedForSession(activeProvider, isInteractive)
+    }
+    LaunchedEffect(isImageAttachmentSupported, selectedImageUri) {
+        if (!isImageAttachmentSupported && selectedImageUri != null) {
+            onSelectImage(null)
+        }
     }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
@@ -538,7 +563,7 @@ fun MessageInput(
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Text(
-                                        text = "READ-ONLY IDE AGENT",
+                                        text = resolveNonInteractiveBadgeTitle(nonInteractiveReason),
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = Color(0xFFFCD34D)
@@ -642,13 +667,13 @@ fun MessageInput(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
                         },
-                        enabled = isInteractive,
+                        enabled = isImageAttachmentSupported,
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Image,
                             contentDescription = "Attach",
-                            tint = if (isInteractive) Color(0xFFD1D5DB) else Color(0xFF4B5563),
+                            tint = if (isImageAttachmentSupported) Color(0xFFD1D5DB) else Color(0xFF4B5563),
                             modifier = Modifier.size(22.dp)
                         )
                     }

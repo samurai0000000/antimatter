@@ -100,14 +100,9 @@ fun SettingsScreen(
 
     var serverCfgLoaded by remember { mutableStateOf(false) }
     var serverCfgBusy by remember { mutableStateOf(false) }
-    var allowCliLockedResume by remember { mutableStateOf(true) }
+    var allowCliNewSessionSpawn by remember { mutableStateOf(true) }
     var strictPresenceFdCheck by remember { mutableStateOf(true) }
-    var diagMasterEnabled by remember { mutableStateOf(false) }
-    var diagLogMobileHttp by remember { mutableStateOf(false) }
-    var diagLogRouterDecisions by remember { mutableStateOf(false) }
-    var diagLogIdlePolls by remember { mutableStateOf(false) }
     var dbSizeBytes by remember { mutableStateOf(0L) }
-    var diagRowsCount by remember { mutableStateOf(0L) }
     var staleLocksCount by remember { mutableStateOf(0) }
     var serverStatusMsg by remember { mutableStateOf<String?>(null) }
 
@@ -144,32 +139,22 @@ fun SettingsScreen(
                             val gw = if (cfg.has("gateway") && cfg.get("gateway").isJsonObject) {
                                 cfg.getAsJsonObject("gateway")
                             } else null
-                            val dg = if (cfg.has("diagnostics") && cfg.get("diagnostics").isJsonObject) {
-                                cfg.getAsJsonObject("diagnostics")
-                            } else null
                             val stats = if (root.has("storage_stats") && root.get("storage_stats").isJsonObject) {
                                 root.getAsJsonObject("storage_stats")
                             } else null
 
                             if (gw != null) {
-                                if (gw.has("allow_cli_locked_detached_resume")) {
-                                    allowCliLockedResume = gw.get("allow_cli_locked_detached_resume").asBoolean
+                                if (gw.has("allow_cli_new_session_spawn")) {
+                                    allowCliNewSessionSpawn = gw.get("allow_cli_new_session_spawn").asBoolean
                                 }
                                 if (gw.has("strict_presence_fd_check")) {
                                     strictPresenceFdCheck = gw.get("strict_presence_fd_check").asBoolean
                                 }
                             }
-                            if (dg != null) {
-                                if (dg.has("enabled")) diagMasterEnabled = dg.get("enabled").asBoolean
-                                if (dg.has("log_mobile_http")) diagLogMobileHttp = dg.get("log_mobile_http").asBoolean
-                                if (dg.has("log_router_decisions")) diagLogRouterDecisions = dg.get("log_router_decisions").asBoolean
-                                if (dg.has("log_idle_transcript_polls")) diagLogIdlePolls = dg.get("log_idle_transcript_polls").asBoolean
-                            }
                             if (stats != null) {
                                 val dbSz = stats.get("database_size_bytes")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                                 val walSz = stats.get("wal_size_bytes")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                                 dbSizeBytes = dbSz + walSz
-                                diagRowsCount = stats.get("diagnostic_logs_count")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                             }
                             if (root.has("stale_presence_locks_count") && !root.get("stale_presence_locks_count").isJsonNull) {
                                 staleLocksCount = root.get("stale_presence_locks_count").asInt
@@ -183,7 +168,7 @@ fun SettingsScreen(
         }
     }
 
-    fun updateServerConfigPatch(gatewayPatch: Map<String, Any>? = null, diagPatch: Map<String, Any>? = null) {
+    fun updateServerConfigPatch(gatewayPatch: Map<String, Any>? = null) {
         val base = resolveServerBaseUrl() ?: return
         coroutineScope.launch {
             serverCfgBusy = true
@@ -191,7 +176,6 @@ fun SettingsScreen(
                 withContext(Dispatchers.IO) {
                     val payload = mutableMapOf<String, Any>()
                     if (gatewayPatch != null) payload["gateway"] = gatewayPatch
-                    if (diagPatch != null) payload["diagnostics"] = diagPatch
                     val bodyStr = gson.toJson(payload)
                     val req = buildServerRequest("$base/api/config")
                         .post(bodyStr.toRequestBody("application/json".toMediaType()))
@@ -213,20 +197,18 @@ fun SettingsScreen(
         }
     }
 
-    fun purgeServerDebugData() {
+    fun pruneServerTelemetry() {
         val base = resolveServerBaseUrl() ?: return
         coroutineScope.launch {
             serverCfgBusy = true
             try {
                 withContext(Dispatchers.IO) {
                     val payload = mapOf(
-                        "purge_debug_data" to true,
-                        "clear_logs" to true,
                         "prune_telemetry" to true,
                         "prune_stale_locks" to true,
                         "vacuum" to true
                     )
-                    val req = buildServerRequest("$base/api/agent/diagnostics/clear")
+                    val req = buildServerRequest("$base/api/telemetry/prune")
                         .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
                         .build()
                     httpClient.newCall(req).execute().use { res ->
@@ -235,15 +217,15 @@ fun SettingsScreen(
                             val obj = JsonParser.parseString(body).asJsonObject
                             val reclaimed = obj.get("reclaimed_bytes")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                             val reclaimedMb = String.format("%.2f", reclaimed.toDouble() / (1024.0 * 1024.0))
-                            serverStatusMsg = "Purged debug data (reclaimed ${reclaimedMb} MB)"
+                            serverStatusMsg = "Pruned telemetry DB (reclaimed ${reclaimedMb} MB)"
                         } else {
-                            serverStatusMsg = "Purge failed (HTTP ${res.code})"
+                            serverStatusMsg = "Prune failed (HTTP ${res.code})"
                         }
                     }
                 }
                 fetchServerConfig()
             } catch (e: Exception) {
-                serverStatusMsg = "Purge error: ${e.message}"
+                serverStatusMsg = "Prune error: ${e.message}"
             } finally {
                 serverCfgBusy = false
             }
@@ -1073,7 +1055,7 @@ fun SettingsScreen(
         }
 
         // =====================================================================
-        // 5. Server Gateway Routing, Diagnostics & Disk Purge Card (aimon.cfg)
+        // 5. Server Gateway Routing & Telemetry Hygiene Card (aimon.cfg)
         // =====================================================================
         item {
             Card(
@@ -1103,7 +1085,7 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Server Routing, Diagnostics & Disk Purge",
+                                text = "Server Routing & Telemetry Hygiene",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
@@ -1111,9 +1093,9 @@ fun SettingsScreen(
                             val dbMb = String.format("%.2f", dbSizeBytes.toDouble() / (1024.0 * 1024.0))
                             Text(
                                 text = if (serverCfgLoaded) {
-                                    "telemetry.db: ${dbMb} MB · Diag rows: $diagRowsCount · Stale locks: $staleLocksCount"
+                                    "telemetry.db: ${dbMb} MB · Stale locks: $staleLocksCount"
                                 } else {
-                                    "Dynamic aimon.cfg controls & SQLite debug storage purge"
+                                    "Dynamic aimon.cfg controls & SQLite telemetry hygiene"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 fontFamily = FontFamily.Monospace,
@@ -1136,12 +1118,12 @@ fun SettingsScreen(
 
                     SettingsToggleRow(
                         icon = Icons.Default.Memory,
-                        title = "Detached CLI Resume on Locked Sessions",
-                        subtitle = "Allow agy --conversation -p fallback when terminal agy has no CSRF token",
-                        checked = allowCliLockedResume,
+                        title = "Allow New CLI Session Spawn in Workspace",
+                        subtitle = "Allow spawning a new CLI session when starting a fresh conversation",
+                        checked = allowCliNewSessionSpawn,
                         onCheckedChange = {
-                            allowCliLockedResume = it
-                            updateServerConfigPatch(gatewayPatch = mapOf("allow_cli_locked_detached_resume" to it))
+                            allowCliNewSessionSpawn = it
+                            updateServerConfigPatch(gatewayPatch = mapOf("allow_cli_new_session_spawn" to it))
                         }
                     )
 
@@ -1161,60 +1143,6 @@ fun SettingsScreen(
                         }
                     )
 
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        color = Color(0xFF1F2430)
-                    )
-
-                    SettingsToggleRow(
-                        icon = Icons.Default.BugReport,
-                        title = "Server Diagnostic Logging (Default Off)",
-                        subtitle = "Master switch for SQLite gateway_diagnostic_logs capture",
-                        checked = diagMasterEnabled,
-                        onCheckedChange = {
-                            diagMasterEnabled = it
-                            updateServerConfigPatch(diagPatch = mapOf("enabled" to it))
-                        }
-                    )
-
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        color = Color(0xFF1F2430)
-                    )
-
-                    SettingsToggleRow(
-                        icon = Icons.Default.BugReport,
-                        title = "Log Mobile HTTP & Router Decisions",
-                        subtitle = "Capture /api/agent/* requests and prompt routing decisions when enabled",
-                        checked = diagLogMobileHttp && diagLogRouterDecisions,
-                        onCheckedChange = {
-                            diagLogMobileHttp = it
-                            diagLogRouterDecisions = it
-                            updateServerConfigPatch(
-                                diagPatch = mapOf(
-                                    "log_mobile_http" to it,
-                                    "log_router_decisions" to it
-                                )
-                            )
-                        }
-                    )
-
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        color = Color(0xFF1F2430)
-                    )
-
-                    SettingsToggleRow(
-                        icon = Icons.Default.BugReport,
-                        title = "Log Idle Transcript Polls (Default Off)",
-                        subtitle = "Suppress 2s unchanged GET /api/agent/transcript polling rows when off",
-                        checked = diagLogIdlePolls,
-                        onCheckedChange = {
-                            diagLogIdlePolls = it
-                            updateServerConfigPatch(diagPatch = mapOf("log_idle_transcript_polls" to it))
-                        }
-                    )
-
                     Spacer(modifier = Modifier.height(14.dp))
 
                     Row(
@@ -1222,7 +1150,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
-                            onClick = { purgeServerDebugData() },
+                            onClick = { pruneServerTelemetry() },
                             enabled = !serverCfgBusy,
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -1231,7 +1159,7 @@ fun SettingsScreen(
                             ),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Purge Debugging Data on Disk", fontSize = 12.sp)
+                            Text("Prune Expired Telemetry DB", fontSize = 12.sp)
                         }
 
                         OutlinedButton(
