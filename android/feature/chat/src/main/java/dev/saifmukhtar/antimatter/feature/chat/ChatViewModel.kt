@@ -442,11 +442,13 @@ class ChatViewModel @Inject constructor(
             null
         }
         _uiState.update { state ->
+            val isAgy = state.activeProvider == "antigravity" ||
+                matchedConv?.source?.trim()?.lowercase() in setOf("cli", "antigravity", "ide", "live")
             state.copy(
                 history = sorted,
                 conversationModel = resolvedConvModel,
-                isSessionInteractive = if (activeCid.isNullOrBlank() || activeCid == "new") true else (matchedConv?.interactive ?: state.isSessionInteractive),
-                nonInteractiveReason = if (activeCid.isNullOrBlank() || activeCid == "new") "" else (matchedConv?.nonInteractiveReason ?: state.nonInteractiveReason)
+                isSessionInteractive = if (activeCid.isNullOrBlank() || activeCid == "new" || isAgy) true else (matchedConv?.interactive ?: state.isSessionInteractive),
+                nonInteractiveReason = if (activeCid.isNullOrBlank() || activeCid == "new" || isAgy) "" else (matchedConv?.nonInteractiveReason ?: state.nonInteractiveReason)
             )
         }
         reapplySearchFilter()
@@ -844,6 +846,11 @@ class ChatViewModel @Inject constructor(
                     "cli", "antigravity", "ide", "live" -> "antigravity"
                     else -> null
                 }
+                val isAgyProvider = (updatedProvider == "antigravity" ||
+                    (updatedProvider == null && _uiState.value.activeProvider == "antigravity"))
+                val effectiveInteractive = if (isAgyProvider) true else message.interactive
+                val effectiveNonInteractiveReason = if (isAgyProvider) "" else message.nonInteractiveReason
+
                 _uiState.update {
                     it.copy(
                         conversationId = message.conversationId,
@@ -854,8 +861,8 @@ class ChatViewModel @Inject constructor(
                         activeWorkspace = resolvedWorkspace.ifBlank { it.activeWorkspace },
                         activeWorkspacePath = resolvedWorkspacePath.ifBlank { it.activeWorkspacePath },
                         activeProvider = updatedProvider ?: it.activeProvider,
-                        isSessionInteractive = message.interactive,
-                        nonInteractiveReason = message.nonInteractiveReason,
+                        isSessionInteractive = effectiveInteractive,
+                        nonInteractiveReason = effectiveNonInteractiveReason,
                         cloudflareUrl = message.cloudflareUrl,
                         environment = message.environment
                     )
@@ -871,8 +878,8 @@ class ChatViewModel @Inject constructor(
                             workspace = message.workspace.ifBlank { existingSummary.workspace },
                             workspacePath = message.workspacePath.ifBlank { existingSummary.workspacePath },
                             stepCount = maxOf(existingSummary.stepCount, message.stepCount),
-                            interactive = message.interactive,
-                            nonInteractiveReason = message.nonInteractiveReason
+                            interactive = effectiveInteractive,
+                            nonInteractiveReason = effectiveNonInteractiveReason
                         )
                     } else {
                         ConversationSummary(
@@ -884,8 +891,8 @@ class ChatViewModel @Inject constructor(
                             workspacePath = message.workspacePath,
                             model = resolvedConvModel,
                             stepCount = message.stepCount,
-                            interactive = message.interactive,
-                            nonInteractiveReason = message.nonInteractiveReason
+                            interactive = effectiveInteractive,
+                            nonInteractiveReason = effectiveNonInteractiveReason
                         )
                     }
                     richSummaryMap[cid] = mergedSummary
@@ -1560,6 +1567,7 @@ class ChatViewModel @Inject constructor(
         if (!isLocalReadOnlySlashCommand &&
             !currentState.conversationId.isNullOrBlank() &&
             currentState.conversationId != "new" &&
+            currentState.activeProvider != "antigravity" &&
             !currentState.isSessionInteractive
         ) {
             val reason = currentState.nonInteractiveReason.ifBlank {
@@ -1669,6 +1677,7 @@ class ChatViewModel @Inject constructor(
         val currentState = _uiState.value
         if (!currentState.conversationId.isNullOrBlank() &&
             currentState.conversationId != "new" &&
+            currentState.activeProvider != "antigravity" &&
             !currentState.isSessionInteractive
         ) {
             val reason = currentState.nonInteractiveReason.ifBlank {
@@ -1799,13 +1808,14 @@ class ChatViewModel @Inject constructor(
             return
         }
         val initialMatchedConv = richSummaryMap[id] ?: _uiState.value.history.find { it.id == id }
+        val initialIsAgy = initialMatchedConv?.source?.trim()?.lowercase() in setOf("cli", "antigravity", "ide", "live", "")
         _uiState.update {
             it.copy(
                 conversationId = id,
                 activeWorkspace = initialMatchedConv?.workspace ?: "",
                 activeWorkspacePath = initialMatchedConv?.workspacePath ?: "",
-                isSessionInteractive = initialMatchedConv?.interactive ?: true,
-                nonInteractiveReason = initialMatchedConv?.nonInteractiveReason ?: "",
+                isSessionInteractive = if (initialIsAgy) true else (initialMatchedConv?.interactive ?: true),
+                nonInteractiveReason = if (initialIsAgy) "" else (initialMatchedConv?.nonInteractiveReason ?: ""),
                 error = null
             )
         }
@@ -1868,8 +1878,8 @@ class ChatViewModel @Inject constructor(
                     activeSessionSource = convSource,
                     activeWorkspace = matchedConv?.workspace ?: it.activeWorkspace,
                     activeWorkspacePath = matchedConv?.workspacePath ?: it.activeWorkspacePath,
-                    isSessionInteractive = matchedConv?.interactive ?: it.isSessionInteractive,
-                    nonInteractiveReason = matchedConv?.nonInteractiveReason ?: it.nonInteractiveReason,
+                    isSessionInteractive = if (inferredProvider == "antigravity") true else (matchedConv?.interactive ?: it.isSessionInteractive),
+                    nonInteractiveReason = if (inferredProvider == "antigravity") "" else (matchedConv?.nonInteractiveReason ?: it.nonInteractiveReason),
                     selectedModel = "default",
                     conversationModel = convModel,
                     showConversationPickerSheet = false,
