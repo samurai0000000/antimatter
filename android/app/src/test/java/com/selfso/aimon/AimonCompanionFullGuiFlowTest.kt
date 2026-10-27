@@ -671,6 +671,16 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals("1d 0h", multiBucketGroup.resetTime)
         assertEquals("Weekly", multiBucketGroup.buckets[0].windowBadge)
         assertEquals("5-Hour", multiBucketGroup.buckets[1].windowBadge)
+        assertEquals(
+            86400f / 604800f,
+            multiBucketGroup.buckets[0].computeIdealRemainingFraction() ?: -1f,
+            0.001f
+        )
+        assertEquals(
+            5400f / 18000f,
+            multiBucketGroup.buckets[1].computeIdealRemainingFraction() ?: -1f,
+            0.001f
+        )
 
         // 2. Cursor dynamic spend and individual usage
         val cur = status.cursor
@@ -729,6 +739,10 @@ class AimonCompanionFullGuiFlowTest {
         assertEquals("1.11B", formatClaudeTokens(enterpriseAcct.last7d!!.totalTokens))
         assertEquals("4.32B", formatClaudeTokens(enterpriseAcct.window!!.totalTokens))
         assertEquals(2_900_000_000L, enterpriseAcct.models[0].totalTokens)
+        // Verify cycle ideal used fraction at midpoint of Oct 2026 (2026-10-16T12:00:00Z)
+        val midOctMs = java.time.Instant.parse("2026-10-16T12:00:00Z").toEpochMilli()
+        assertEquals(0.5f, enterpriseAcct.computeIdealUsedFraction(midOctMs) ?: -1f, 0.001f)
+        assertEquals(0.5f, cur.computeIdealUsedFraction(midOctMs) ?: -1f, 0.001f)
     }
 
     @Test

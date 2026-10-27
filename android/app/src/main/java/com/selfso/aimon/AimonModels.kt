@@ -59,6 +59,37 @@ fun computeDaysRemaining(iso: String, nowEpochMs: Long = System.currentTimeMilli
     }
 }
 
+fun computeCycleIdealUsedFraction(
+    cycleResetIso: String,
+    fromEpochSec: Long = 0L,
+    nowEpochMs: Long = System.currentTimeMillis()
+): Float? {
+    val trimmed = cycleResetIso.trim()
+    if (trimmed.isEmpty()) return null
+    return try {
+        val endInstant = if (trimmed.contains('T')) {
+            Instant.parse(trimmed)
+        } else {
+            LocalDate.parse(trimmed).atStartOfDay(ZoneOffset.UTC).toInstant()
+        }
+        val endMs = endInstant.toEpochMilli()
+        val startMs = if (fromEpochSec > 0L && fromEpochSec * 1000L < endMs) {
+            fromEpochSec * 1000L
+        } else {
+            endInstant.atZone(ZoneOffset.UTC).minusMonths(1).toInstant().toEpochMilli()
+        }
+        if (endMs <= startMs || nowEpochMs < startMs || nowEpochMs > endMs) {
+            null
+        } else {
+            ((nowEpochMs - startMs).toDouble() / (endMs - startMs).toDouble())
+                .coerceIn(0.0, 1.0)
+                .toFloat()
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
 data class QuotaStatus(
     @SerializedName(value = "antigravity", alternate = ["ag"])
     val antigravity: AntigravityQuota? = null,
@@ -208,6 +239,44 @@ data class QuotaBucket(
 
     val resetTimeDisplay: String
         get() = formatDurationSeconds(resetTimeRemainingSeconds, resetTimeIso)
+
+    val windowDurationSeconds: Long
+        get() {
+            val win = window.lowercase()
+            val bid = bucketId.lowercase()
+            val dname = displayName.lowercase()
+            return if (win == "5h" || win == "five_hour" || bid.contains("5h") ||
+                dname.contains("five hour") || dname.contains("5-hour")
+            ) {
+                5L * 3600L
+            } else {
+                7L * 86400L
+            }
+        }
+
+    fun computeIdealRemainingFraction(nowEpochMs: Long = System.currentTimeMillis()): Float? {
+        val winSec = windowDurationSeconds
+        if (winSec <= 0L) return null
+        val remSec: Double = when {
+            resetTimeRemainingSeconds > 0L -> resetTimeRemainingSeconds.toDouble()
+            resetTimeIso.isNotBlank() -> {
+                try {
+                    val trimmed = resetTimeIso.trim()
+                    val endMs = if (trimmed.contains('T')) {
+                        Instant.parse(trimmed).toEpochMilli()
+                    } else {
+                        LocalDate.parse(trimmed).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+                    }
+                    (endMs - nowEpochMs).toDouble() / 1000.0
+                } catch (_: Exception) {
+                    0.0
+                }
+            }
+            else -> 0.0
+        }
+        if (remSec <= 0.0 || remSec > winSec.toDouble() * 1.05) return null
+        return (remSec / winSec.toDouble()).coerceIn(0.0, 1.0).toFloat()
+    }
 }
 
 data class ModelCapacity(
@@ -287,6 +356,11 @@ data class CursorUsage(
 
     val fastRequestsRemaining: Int
         get() = maxOf(0, fastRequestsLimit - fastRequestsUsed)
+
+    fun computeIdealUsedFraction(nowEpochMs: Long = System.currentTimeMillis()): Float? {
+        if (fastRequestsLimit <= 0) return null
+        return computeCycleIdealUsedFraction(cycleResetIso, 0L, nowEpochMs)
+    }
 }
 
 data class DailySpend(
@@ -319,7 +393,11 @@ data class ClaudeWindowTotals(
     @SerializedName(value = "est_cost_nano", alternate = ["estCostNano"])
     val estCostNano: Long = 0L,
     @SerializedName(value = "est_cost_usd", alternate = ["estCostUsd", "costUsd"])
-    val rawEstCostUsd: Double? = null
+    val rawEstCostUsd: Double? = null,
+    @SerializedName(value = "from_epoch", alternate = ["fromEpoch"])
+    val fromEpoch: Long = 0L,
+    @SerializedName(value = "to_epoch", alternate = ["toEpoch"])
+    val toEpoch: Long = 0L
 ) {
     val estCostUsd: Double
         get() = rawEstCostUsd ?: (estCostNano / 1e9)
@@ -485,6 +563,11 @@ data class ClaudeAccount(
             estPctOfLimit > 0.0 -> estPctOfLimit.coerceIn(0.0, 100.0)
             else -> 0.0
         }
+
+    fun computeIdealUsedFraction(nowEpochMs: Long = System.currentTimeMillis()): Float? {
+        if (spendLimitUsd <= 0.0) return null
+        return computeCycleIdealUsedFraction(cycleResetIso, cycle?.fromEpoch ?: 0L, nowEpochMs)
+    }
 }
 
 data class ClaudeUsage(

@@ -22,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -97,6 +98,30 @@ fun computeAntigravitySweepAngle(ag: AntigravityQuota?): Float {
         else -> 0.0
     }
     return (avgRemainingPct.coerceIn(0.0, 100.0).toFloat() / 100f) * 360f
+}
+
+private fun Modifier.drawIdealPaceMarker(idealFraction: Float?): Modifier {
+    if (idealFraction == null || idealFraction.isNaN()) return this
+    val clamped = idealFraction.coerceIn(0f, 1f)
+    return this.drawWithContent {
+        drawContent()
+        if (size.width > 0f && size.height > 0f) {
+            val padPx = 1.dp.toPx()
+            val x = (clamped * size.width).coerceIn(padPx, max(padPx, size.width - padPx))
+            drawLine(
+                color = Color(0xCC000000),
+                start = Offset(x, 0f),
+                end = Offset(x, size.height),
+                strokeWidth = 4.dp.toPx()
+            )
+            drawLine(
+                color = Color.White,
+                start = Offset(x, 0f),
+                end = Offset(x, size.height),
+                strokeWidth = 2.dp.toPx()
+            )
+        }
+    }
 }
 
 private val cursorCategoryGradients = listOf(
@@ -423,6 +448,11 @@ fun QuotasScreen(
     }
 
     val numberFormat = NumberFormat.getNumberInstance(Locale.US)
+    val nowMs = if (quotaStatus.serverTimestampMs > 0L) {
+        quotaStatus.serverTimestampMs
+    } else {
+        System.currentTimeMillis()
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -719,12 +749,14 @@ fun QuotasScreen(
                                                                 )
                                                             }
                                                             Spacer(modifier = Modifier.height(6.dp))
+                                                            val bucketIdealFrac = bucket.computeIdealRemainingFraction(nowMs)
                                                             Box(
                                                                 modifier = Modifier
                                                                     .fillMaxWidth()
                                                                     .height(8.dp)
                                                                     .clip(RoundedCornerShape(4.dp))
                                                                     .background(Color(0xFF27272A))
+                                                                    .drawIdealPaceMarker(bucketIdealFrac)
                                                             ) {
                                                                 Box(
                                                                     modifier = Modifier
@@ -899,12 +931,14 @@ fun QuotasScreen(
                                     )
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
+                                val cursorIdealFrac = cur.computeIdealUsedFraction(nowMs)
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(8.dp)
                                         .clip(RoundedCornerShape(4.dp))
                                         .background(Color(0xFF27272A))
+                                        .drawIdealPaceMarker(cursorIdealFrac)
                                 ) {
                                     Box(
                                         modifier = Modifier
@@ -1230,12 +1264,14 @@ fun QuotasScreen(
 
                                     if (limit > 0.0) {
                                         Spacer(modifier = Modifier.height(8.dp))
+                                        val claudeIdealFrac = a.computeIdealUsedFraction(nowMs)
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .height(8.dp)
                                                 .clip(RoundedCornerShape(4.dp))
                                                 .background(Color(0xFF27272A))
+                                                .drawIdealPaceMarker(claudeIdealFrac)
                                         ) {
                                             Box(
                                                 modifier = Modifier
