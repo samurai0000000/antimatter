@@ -592,6 +592,10 @@ class BridgeWebSocket(private val context: Context) {
                                             agentId = message.agentId ?: "antigravity"
                                         ))
                                     } else {
+                                        val isAsynchronousDispatch = status == "dispatched" ||
+                                            status == "queued" ||
+                                            status == "injected" ||
+                                            status == "started"
                                         if (cid.isNotBlank() && cid != "new") {
                                             _messages.emit(InboundMessage.Generating(
                                                 conversationId = cid,
@@ -604,10 +608,14 @@ class BridgeWebSocket(private val context: Context) {
                                                 _messages.emit(InboundMessage.StepBatch(
                                                     steps = parsedSteps,
                                                     agentId = message.agentId ?: "antigravity",
-                                                    conversationId = cid.ifBlank { null }
+                                                    conversationId = cid.ifBlank { null },
+                                                    generating = if (isAsynchronousDispatch) true else null,
+                                                    status = if (isAsynchronousDispatch) "RUNNING" else status
                                                 ))
                                             }
-                                            _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                            if (!isAsynchronousDispatch) {
+                                                _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                            }
                                         } else if (json.has("response") && json.get("response").isJsonPrimitive) {
                                             val respText = json.get("response").asString
                                             if (cid.isBlank() || cid == "new") {
@@ -617,7 +625,9 @@ class BridgeWebSocket(private val context: Context) {
                                                     agentId = message.agentId ?: "antigravity"
                                                 ))
                                             }
-                                            _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                            if (!isAsynchronousDispatch) {
+                                                _messages.emit(InboundMessage.ResponseComplete(conversationId = cid, agentId = message.agentId ?: "antigravity"))
+                                            }
                                         }
                                     }
                                 } catch (e: Exception) {
@@ -720,6 +730,14 @@ class BridgeWebSocket(private val context: Context) {
                                 val workspacePath = optJsonString(json, "workspacePath") ?: ""
                                 val isInteractive = optJsonBool(json, "interactive", true)
                                 val nonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
+                                val transcriptStatus = optJsonString(json, "status") ?: ""
+                                val transcriptGenerating: Boolean? = if (json.has("generating") && !json.get("generating").isJsonNull) {
+                                    optJsonBool(json, "generating", false)
+                                } else if (transcriptStatus.isNotBlank()) {
+                                    transcriptStatus.equals("RUNNING", ignoreCase = true)
+                                } else {
+                                    null
+                                }
                                 val steps = parseTranscriptStepsFromJson(json, message.agentId)
 
                                 if (message.sinceStepIndex != null && message.sinceStepIndex >= 0 && stepCount > 0 && stepCount <= message.sinceStepIndex) {
@@ -771,6 +789,14 @@ class BridgeWebSocket(private val context: Context) {
                                         val fullWorkspacePath = optJsonString(fullJson, "workspacePath") ?: workspacePath
                                         val fullInteractive = optJsonBool(fullJson, "interactive", isInteractive)
                                         val fullNonInteractiveReason = optJsonString(fullJson, "nonInteractiveReason") ?: nonInteractiveReason
+                                        val fullStatus = optJsonString(fullJson, "status") ?: transcriptStatus
+                                        val fullGenerating: Boolean? = if (fullJson.has("generating") && !fullJson.get("generating").isJsonNull) {
+                                            optJsonBool(fullJson, "generating", false)
+                                        } else if (fullStatus.isNotBlank()) {
+                                            fullStatus.equals("RUNNING", ignoreCase = true)
+                                        } else {
+                                            transcriptGenerating
+                                        }
                                         val fullSteps = parseTranscriptStepsFromJson(fullJson, message.agentId)
                                         _messages.emit(InboundMessage.SessionState(
                                             conversationId = fullCid,
@@ -781,12 +807,16 @@ class BridgeWebSocket(private val context: Context) {
                                             workspace = fullWorkspace,
                                             workspacePath = fullWorkspacePath,
                                             interactive = fullInteractive,
-                                            nonInteractiveReason = fullNonInteractiveReason
+                                            nonInteractiveReason = fullNonInteractiveReason,
+                                            generating = fullGenerating,
+                                            status = fullStatus
                                         ))
                                         _messages.emit(InboundMessage.StepBatch(
                                             steps = fullSteps,
                                             agentId = message.agentId,
-                                            conversationId = fullCid
+                                            conversationId = fullCid,
+                                            generating = fullGenerating,
+                                            status = fullStatus
                                         ))
                                     }
                                 } else {
@@ -800,14 +830,18 @@ class BridgeWebSocket(private val context: Context) {
                                             workspace = workspace,
                                             workspacePath = workspacePath,
                                             interactive = isInteractive,
-                                            nonInteractiveReason = nonInteractiveReason
+                                            nonInteractiveReason = nonInteractiveReason,
+                                            generating = transcriptGenerating,
+                                            status = transcriptStatus
                                         ))
                                     }
-                                    if (steps.isNotEmpty() || message.sinceStepIndex == null || message.sinceStepIndex < 0) {
+                                    if (steps.isNotEmpty() || message.sinceStepIndex == null || message.sinceStepIndex < 0 || transcriptGenerating != null) {
                                         _messages.emit(InboundMessage.StepBatch(
                                             steps = steps,
                                             agentId = message.agentId,
-                                            conversationId = cid
+                                            conversationId = cid,
+                                            generating = transcriptGenerating,
+                                            status = transcriptStatus
                                         ))
                                     }
                                 }
@@ -954,7 +988,50 @@ class BridgeWebSocket(private val context: Context) {
                             _messages.emit(InboundMessage.Ack(message.id ?: ""))
                         }
                         is OutboundMessage.CancelResponse -> {
-                            _messages.emit(InboundMessage.ResponseComplete(agentId = message.agentId))
+                            val cancelCid = message.conversationId ?: ""
+                            if (cancelCid.isNotBlank() && cancelCid != "new") {
+                                try {
+                                    val payload = com.google.gson.JsonObject().apply {
+                                        addProperty("conversationId", cancelCid)
+                                        addProperty("agentId", message.agentId ?: "antigravity")
+                                        if (message.source.isNotBlank()) {
+                                            addProperty("source", message.source)
+                                        }
+                                    }
+                                    val reqId = nextRequestId()
+                                    val startMs = System.currentTimeMillis()
+                                    val req = Request.Builder()
+                                        .url("$url/api/agent/cancel")
+                                        .header("User-Agent", "aimon-mobile/1.0")
+                                        .header("X-Request-Id", reqId)
+                                        .header("X-Client-Meta", "android")
+                                        .apply {
+                                            if (!token.isNullOrBlank()) {
+                                                header("X-Mobile-Token", token!!)
+                                                header("Authorization", "Bearer $token")
+                                            }
+                                        }
+                                        .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+                                        .build()
+                                    val resp = client.newCall(req).execute()
+                                    val durationMs = System.currentTimeMillis() - startMs
+                                    resp.body?.close()
+                                    recordNetworkTrace(
+                                        reqId,
+                                        "POST",
+                                        "/api/agent/cancel",
+                                        resp.code,
+                                        durationMs,
+                                        if (!resp.isSuccessful) "HTTP ${resp.code}" else null
+                                    )
+                                } catch (e: Exception) {
+                                    Log.w("BridgeWebSocket", "Failed to POST /api/agent/cancel for $cancelCid", e)
+                                }
+                            }
+                            _messages.emit(InboundMessage.ResponseComplete(
+                                conversationId = cancelCid,
+                                agentId = message.agentId
+                            ))
                         }
                         else -> {
                             _messages.emit(InboundMessage.Ack(message.id ?: ""))
@@ -1227,6 +1304,14 @@ class BridgeWebSocket(private val context: Context) {
             val workspacePath = optJsonString(json, "workspacePath") ?: ""
             val interactive = optJsonBool(json, "interactive", true)
             val nonInteractiveReason = optJsonString(json, "nonInteractiveReason") ?: ""
+            val status = optJsonString(json, "status") ?: ""
+            val generating: Boolean? = if (json.has("generating") && !json.get("generating").isJsonNull) {
+                optJsonBool(json, "generating", false)
+            } else if (status.isNotBlank()) {
+                status.equals("RUNNING", ignoreCase = true)
+            } else {
+                null
+            }
             return InboundMessage.SessionState(
                 conversationId = cid,
                 model = model,
@@ -1236,7 +1321,9 @@ class BridgeWebSocket(private val context: Context) {
                 workspace = workspace,
                 workspacePath = workspacePath,
                 interactive = interactive,
-                nonInteractiveReason = nonInteractiveReason
+                nonInteractiveReason = nonInteractiveReason,
+                generating = generating,
+                status = status
             )
         }
 

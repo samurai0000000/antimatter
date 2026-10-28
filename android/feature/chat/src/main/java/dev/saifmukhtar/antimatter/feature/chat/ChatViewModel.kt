@@ -130,6 +130,94 @@ data class ChatUiState(
     val selectedImageUri: Uri? = null
 )
 
+fun isTransientRetryErrorStep(step: TrajectoryStep): Boolean {
+    if (step.stepCase != StepCase.ERROR_MESSAGE) return false
+    val raw = (step.value ?: step.displayText).lowercase()
+    return raw.contains("api error (attempt ") ||
+        raw.contains("the stream was interrupted") ||
+        raw.contains("stream idle timeout")
+}
+
+fun isCompactionCheckpointStep(step: TrajectoryStep): Boolean {
+    if (step.stepCase == StepCase.CHECKPOINT) return true
+    if (step.stepCase == StepCase.TEXT || step.stepCase == StepCase.MARKDOWN_CHUNK) {
+        val trimmed = step.value?.trimStart() ?: ""
+        return trimmed.startsWith("✨ Context Compacted") ||
+            trimmed.startsWith("Context Compacted")
+    }
+    return false
+}
+
+fun computeIsGeneratingFromSteps(
+    steps: List<TrajectoryStep>,
+    wasGenerating: Boolean,
+    serverGenerating: Boolean? = null,
+    serverStatus: String = "",
+    summaryActive: Boolean = false,
+    isExplicitlyCancelled: Boolean = false
+): Boolean {
+    if (isExplicitlyCancelled) return false
+
+    val hasPendingOptimisticUserStep = steps.lastOrNull()?.let {
+        it.stepCase == StepCase.USER_INPUT && it.stepIndex < 0
+    } == true
+    if (hasPendingOptimisticUserStep) return true
+
+    if (serverGenerating != null) {
+        return serverGenerating
+    }
+    if (serverStatus.equals("RUNNING", ignoreCase = true)) {
+        return true
+    }
+    if (serverStatus.equals("DONE", ignoreCase = true) ||
+        serverStatus.equals("ABORTED", ignoreCase = true) ||
+        serverStatus.equals("CANCELLED", ignoreCase = true)
+    ) {
+        return false
+    }
+
+    if (steps.isEmpty()) {
+        return wasGenerating || summaryActive
+    }
+
+    val lastUserIdx = steps.indexOfLast { it.stepCase == StepCase.USER_INPUT }
+    val candidates = if (lastUserIdx >= 0) {
+        steps.subList(lastUserIdx + 1, steps.size)
+    } else {
+        steps
+    }
+    if (candidates.isEmpty()) {
+        return wasGenerating || summaryActive
+    }
+
+    val tailStep = candidates.last()
+    return when (tailStep.stepCase) {
+        StepCase.ASK_QUESTION,
+        StepCase.ELICITATION -> tailStep.isQuestionAnswered
+        StepCase.ERROR_MESSAGE -> isTransientRetryErrorStep(tailStep)
+        StepCase.TEXT,
+        StepCase.MARKDOWN_CHUNK -> {
+            if (isCompactionCheckpointStep(tailStep)) {
+                true
+            } else {
+                candidates.any { other ->
+                    other.stepCase == StepCase.TOOL_CALL &&
+                        other.stepIndex >= 0 &&
+                        other.stepIndex >= tailStep.stepIndex
+                }
+            }
+        }
+        StepCase.TOOL_CALL,
+        StepCase.PLANNER_RESPONSE,
+        StepCase.CHECKPOINT,
+        StepCase.TASK_BOUNDARY,
+        StepCase.INVOKE_SUBAGENT,
+        StepCase.SEND_MESSAGE,
+        StepCase.EPHEMERAL_MESSAGE -> true
+        else -> false
+    }
+}
+
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -144,6 +232,8 @@ class ChatViewModel @Inject constructor(
     private val richSummaryMap = java.util.concurrent.ConcurrentHashMap<String, dev.saifmukhtar.antimatter.core.network.ConversationSummary>()
     private var serverSearchJob: kotlinx.coroutines.Job? = null
     private var pendingFocusIsTranscriptStepIndex: Boolean = false
+    private var cancelledConversationId: String? = null
+    private var cancelledAtStepCount: Int = -1
 
     private var baseUrl: String = "http://127.0.0.1:3883"
     private var token: String = ""
@@ -850,8 +940,20 @@ class ChatViewModel @Inject constructor(
                     (updatedProvider == null && _uiState.value.activeProvider == "antigravity"))
                 val effectiveInteractive = if (isAgyProvider) true else message.interactive
                 val effectiveNonInteractiveReason = if (isAgyProvider) "" else message.nonInteractiveReason
+                val summaryIsActive = message.conversationId?.let { richSummaryMap[it]?.active == true || richSummaryMap[it]?.openInTerminal == true } == true
+                val isCancelledHere = message.conversationId != null &&
+                    message.conversationId == cancelledConversationId &&
+                    message.stepCount <= cancelledAtStepCount
 
                 _uiState.update {
+                    val computedGen = computeIsGeneratingFromSteps(
+                        steps = it.steps,
+                        wasGenerating = it.isGenerating,
+                        serverGenerating = message.generating,
+                        serverStatus = message.status,
+                        summaryActive = summaryIsActive,
+                        isExplicitlyCancelled = isCancelledHere
+                    )
                     it.copy(
                         conversationId = message.conversationId,
                         expectedStepCount = message.stepCount,
@@ -863,6 +965,7 @@ class ChatViewModel @Inject constructor(
                         activeProvider = updatedProvider ?: it.activeProvider,
                         isSessionInteractive = effectiveInteractive,
                         nonInteractiveReason = effectiveNonInteractiveReason,
+                        isGenerating = computedGen,
                         cloudflareUrl = message.cloudflareUrl,
                         environment = message.environment
                     )
@@ -1066,33 +1169,30 @@ class ChatViewModel @Inject constructor(
                         }
                     }
 
-                    val stillGenerating = if (state.isGenerating) {
-                        val lastUserIdx = newSteps.indexOfLast { it.stepCase == StepCase.USER_INPUT }
-                        val candidates = if (lastUserIdx >= 0) {
-                            newSteps.subList(lastUserIdx + 1, newSteps.size)
-                        } else {
-                            newSteps
-                        }
-                        val hasFinalReply = candidates.any { step ->
-                            when (step.stepCase) {
-                                StepCase.ERROR_MESSAGE,
-                                StepCase.ASK_QUESTION,
-                                StepCase.ELICITATION -> true
-                                StepCase.TEXT,
-                                StepCase.MARKDOWN_CHUNK -> {
-                                    candidates.none { other ->
-                                        other.stepCase == StepCase.TOOL_CALL &&
-                                            other.stepIndex >= 0 &&
-                                            other.stepIndex >= step.stepIndex
-                                    }
-                                }
-                                else -> false
-                            }
-                        }
-                        !hasFinalReply
-                    } else {
-                        false
+                    val resolvedBatchCid = targetCid ?: state.conversationId
+                    if (resolvedBatchCid != null &&
+                        resolvedBatchCid == cancelledConversationId &&
+                        newSteps.size > cancelledAtStepCount &&
+                        message.generating == true
+                    ) {
+                        cancelledConversationId = null
+                        cancelledAtStepCount = -1
                     }
+                    val isCancelledForBatch = resolvedBatchCid != null &&
+                        resolvedBatchCid == cancelledConversationId &&
+                        newSteps.size <= cancelledAtStepCount
+                    val summaryIsActive = resolvedBatchCid?.let {
+                        richSummaryMap[it]?.active == true || richSummaryMap[it]?.openInTerminal == true
+                    } == true
+
+                    val stillGenerating = computeIsGeneratingFromSteps(
+                        steps = newSteps,
+                        wasGenerating = state.isGenerating,
+                        serverGenerating = message.generating,
+                        serverStatus = message.status,
+                        summaryActive = summaryIsActive,
+                        isExplicitlyCancelled = isCancelledForBatch
+                    )
 
                     val cidToSave = targetCid ?: state.conversationId ?: "default"
                     if (cidToSave != "new") {
@@ -1147,6 +1247,10 @@ class ChatViewModel @Inject constructor(
             is InboundMessage.Generating -> {
                 val prevCid = _uiState.value.conversationId
                 val resolvedCid = message.conversationId.takeIf { it.isNotBlank() } ?: prevCid
+                if (resolvedCid == cancelledConversationId) {
+                    cancelledConversationId = null
+                    cancelledAtStepCount = -1
+                }
                 if (!resolvedCid.isNullOrBlank() && resolvedCid != "new" && prevCid != null && prevCid != "new" && resolvedCid != prevCid) {
                     lastStepIndex = -1
                     pendingFullRefresh = false
@@ -1598,6 +1702,10 @@ class ChatViewModel @Inject constructor(
         }
         val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE)
         val autoApprove = prefs?.getBoolean("auto_approve_mobile_tools", true) ?: true
+        if (targetConversationId == cancelledConversationId) {
+            cancelledConversationId = null
+            cancelledAtStepCount = -1
+        }
         
         // Optimistically add user step
         _uiState.update { state ->
@@ -1712,6 +1820,10 @@ class ChatViewModel @Inject constructor(
         }
         val prefs = context.getSharedPreferences("aimon_prefs", Context.MODE_PRIVATE)
         val autoApprove = prefs?.getBoolean("auto_approve_mobile_tools", true) ?: true
+        if (targetCid == cancelledConversationId) {
+            cancelledConversationId = null
+            cancelledAtStepCount = -1
+        }
 
         _uiState.update { state ->
             val updatedSteps = state.steps.map { existing ->
@@ -1867,12 +1979,24 @@ class ChatViewModel @Inject constructor(
                 "cursor" -> "cursor"
                 else -> "antigravity"
             }
+            val initialSummaryActive = matchedConv?.active == true || matchedConv?.openInTerminal == true
+            val isCancelledHere = id == cancelledConversationId && initialSteps.size <= cancelledAtStepCount
+            val initialGenerating = if (initialSummaryActive && initialSteps.isNotEmpty()) {
+                computeIsGeneratingFromSteps(
+                    steps = initialSteps,
+                    wasGenerating = false,
+                    summaryActive = true,
+                    isExplicitlyCancelled = isCancelledHere
+                )
+            } else {
+                false
+            }
 
             _uiState.update {
                 it.copy(
                     steps = initialSteps,
                     conversationId = id,
-                    isGenerating = false,
+                    isGenerating = initialGenerating,
                     error = null,
                     activeProvider = inferredProvider,
                     activeSessionSource = convSource,
@@ -1961,7 +2085,23 @@ class ChatViewModel @Inject constructor(
     }
 
     fun cancelResponse() {
-        webSocket.sendMessage(OutboundMessage.CancelResponse(agentId = _uiState.value.activeAgentId))
+        val currentCid = _uiState.value.conversationId
+        if (!currentCid.isNullOrBlank() && currentCid != "new") {
+            cancelledConversationId = currentCid
+            cancelledAtStepCount = maxOf(_uiState.value.steps.size, _uiState.value.expectedStepCount)
+        }
+        val effectiveRole = resolveEffectiveProvider(currentCid)
+        val sourceToSend = when {
+            effectiveRole in listOf("claude", "cursor", "cli", "ide") -> effectiveRole
+            else -> _uiState.value.activeSessionSource.trim().lowercase().ifBlank { "cli" }
+        }
+        webSocket.sendMessage(
+            OutboundMessage.CancelResponse(
+                conversationId = currentCid,
+                source = sourceToSend,
+                agentId = _uiState.value.activeAgentId ?: "antigravity"
+            )
+        )
         _uiState.update { it.copy(isGenerating = false) }
     }
     

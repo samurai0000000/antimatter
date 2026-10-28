@@ -33,10 +33,12 @@ import dev.saifmukhtar.antimatter.core.network.TrajectoryStep
 import dev.saifmukhtar.antimatter.feature.chat.ChatItem
 import dev.saifmukhtar.antimatter.feature.chat.ChatViewModel
 import dev.saifmukhtar.antimatter.feature.chat.SpeechDictationSession
+import dev.saifmukhtar.antimatter.feature.chat.computeIsGeneratingFromSteps
 import dev.saifmukhtar.antimatter.feature.chat.computeMaxPromptInputHeightDp
 import dev.saifmukhtar.antimatter.feature.chat.effectivePlaceholderForSession
 import dev.saifmukhtar.antimatter.feature.chat.groupSteps
 import dev.saifmukhtar.antimatter.feature.chat.isImageAttachmentSupportedForSession
+import dev.saifmukhtar.antimatter.feature.chat.isTransientRetryErrorStep
 import dev.saifmukhtar.antimatter.feature.chat.mergeDictatedText
 import dev.saifmukhtar.antimatter.feature.chat.placeholderForProvider
 import dev.saifmukhtar.antimatter.feature.chat.resolveNonInteractiveBadgeTitle
@@ -2180,6 +2182,140 @@ class AimonCompanionFullGuiFlowTest {
         assertFalse(isImageAttachmentSupportedForSession("antigravity", isInteractive = false))
         assertTrue(isImageAttachmentSupportedForSession("antigravity", isInteractive = true))
         assertTrue(isImageAttachmentSupportedForSession("ide", isInteractive = true))
+    }
+
+    @Test
+    fun testStopButtonGeneratingStateTrackingAndCancelEndpointDispatch() = runBlocking {
+        // 1. Verify computeIsGeneratingFromSteps on transient retry errors, mid-turn tools, and final replies
+        val userStep = TrajectoryStep(case = "userInput", value = "Build and test", stepIndex = 0)
+        val thoughtStep = TrajectoryStep(case = "plannerResponse", value = "Running build", thinking = "Running build", stepIndex = 1)
+        val toolStep = TrajectoryStep(case = "toolCall", tool = "run_command", command = "make all", stepIndex = 2)
+        val retryErrStep = TrajectoryStep(
+            case = "errorMessage",
+            value = "API error (attempt 1): request failed: stream idle timeout (5m0s): context deadline exceeded",
+            stepIndex = 3
+        )
+        val fatalErrStep = TrajectoryStep(
+            case = "errorMessage",
+            value = "Fatal authentication error",
+            stepIndex = 4
+        )
+        val compactionStep = TrajectoryStep(
+            case = "text",
+            value = "✨ Context Compacted (12 steps summarized)",
+            stepIndex = 4
+        )
+        val finalTextStep = TrajectoryStep(
+            case = "text",
+            value = "All tests built and passed!",
+            stepIndex = 5
+        )
+
+        assertTrue(isTransientRetryErrorStep(retryErrStep))
+        assertFalse(isTransientRetryErrorStep(fatalErrStep))
+
+        // Even when wasGenerating == false (opening an already-running session), mid-turn steps keep isGenerating == true
+        assertTrue(computeIsGeneratingFromSteps(listOf(userStep, thoughtStep, toolStep), wasGenerating = false))
+        assertTrue(computeIsGeneratingFromSteps(listOf(userStep, thoughtStep, toolStep, retryErrStep), wasGenerating = false))
+        assertTrue(computeIsGeneratingFromSteps(listOf(userStep, thoughtStep, compactionStep), wasGenerating = false))
+
+        // Fatal error or final text reply transitions isGenerating to false
+        assertFalse(computeIsGeneratingFromSteps(listOf(userStep, thoughtStep, fatalErrStep), wasGenerating = true))
+        assertFalse(computeIsGeneratingFromSteps(listOf(userStep, thoughtStep, toolStep, finalTextStep), wasGenerating = true))
+
+        // Explicit cancellation overrides in-flight steps to false
+        assertFalse(
+            computeIsGeneratingFromSteps(
+                listOf(userStep, thoughtStep, toolStep, retryErrStep),
+                wasGenerating = true,
+                serverGenerating = true,
+                isExplicitlyCancelled = true
+            )
+        )
+
+        // 2. End-to-end ViewModel + BridgeWebSocket test for active session opening + cancelResponse()
+        var cancelCalledOnServer = false
+        val nowSec = System.currentTimeMillis() / 1000L
+        registerRoute("/api/agent/conversations", requireToken = "tok-live-verified-001") {
+            """
+            {
+              "conversations": [
+                {
+                  "id": "conv-active-retry",
+                  "title": "Run long build",
+                  "source": "cli",
+                  "workspace": "aimon",
+                  "timestamp": $nowSec,
+                  "active": ${!cancelCalledOnServer},
+                  "interactive": true
+                }
+              ]
+            }
+            """.trimIndent()
+        }
+        registerRoute("/api/agent/transcript", requireToken = "tok-live-verified-001") { req ->
+            val q = req.query ?: ""
+            if (q.contains("id=conv-active-retry")) {
+                """
+                {
+                  "conversationId": "conv-active-retry",
+                  "source": "cli",
+                  "status": "${if (cancelCalledOnServer) "DONE" else "RUNNING"}",
+                  "generating": ${!cancelCalledOnServer},
+                  "model": "Gemini 4 Argon (High)",
+                  "workspace": "aimon",
+                  "workspacePath": "/work/aimon",
+                  "interactive": true,
+                  "stepCount": 3,
+                  "steps": [
+                    {"stepIndex": 0, "type": "USER_INPUT", "text": "Run long build"},
+                    {"stepIndex": 1, "type": "PLANNER_RESPONSE", "thinking": "Executing build", "text": "", "tool_calls": [{"name": "run_command", "command": "make all"}]},
+                    {"stepIndex": 2, "type": "ERROR_MESSAGE", "text": "API error (attempt 1): request failed: stream idle timeout (5m0s): context deadline exceeded"}
+                  ]
+                }
+                """.trimIndent()
+            } else {
+                """{"conversationId":"new","stepCount":0,"steps":[]}"""
+            }
+        }
+        registerRoute("/api/agent/cancel", requireToken = "tok-live-verified-001") {
+            cancelCalledOnServer = true
+            """{"ok":true,"status":"cancelled","conversationId":"conv-active-retry","provider":"antigravity","method":"connect_rpc_cancel_cascade","dispatched":true}"""
+        }
+
+        val mockUserPrefs = mock(UserPreferencesRepository::class.java)
+        val mockDao = mock(AppDao::class.java)
+        `when`(mockDao.getAllAgentsFlow()).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getConversationsForAgentFlow(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(mockDao.getStepsForConversation(anyString())).thenReturn(emptyList())
+
+        val bridgeWebSocket = BridgeWebSocket(mockApplication)
+        val chatVm = ChatViewModel(mockApplication, bridgeWebSocket, mockUserPrefs, mockDao)
+        chatVm.configureEndpoint(serverBaseUrl, "tok-live-verified-001")
+
+        // Opening an already-running session that hit API error (attempt 1) must immediately set isGenerating = true
+        chatVm.selectConversation("conv-active-retry")
+        waitUntil {
+            chatVm.uiState.value.conversationId == "conv-active-retry" &&
+                chatVm.uiState.value.steps.size >= 3 &&
+                chatVm.uiState.value.isGenerating
+        }
+        assertTrue(
+            "Stop button state (isGenerating) must be active when viewing an in-flight/retrying session",
+            chatVm.uiState.value.isGenerating
+        )
+
+        // Calling cancelResponse() must POST /api/agent/cancel and transition isGenerating to false
+        recordedRequests.removeIf { it.path == "/api/agent/cancel" }
+        chatVm.cancelResponse()
+        assertFalse("isGenerating must immediately become false on cancelResponse()", chatVm.uiState.value.isGenerating)
+
+        waitUntil {
+            recordedRequests.any { it.path == "/api/agent/cancel" }
+        }
+        val cancelReq = recordedRequests.last { it.path == "/api/agent/cancel" }
+        val cancelJson = JsonParser.parseString(cancelReq.body).asJsonObject
+        assertEquals("conv-active-retry", cancelJson.get("conversationId").asString)
     }
 }
 

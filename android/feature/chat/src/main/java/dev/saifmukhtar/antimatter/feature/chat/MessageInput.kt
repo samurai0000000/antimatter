@@ -719,12 +719,17 @@ fun MessageInput(
 
                     if (isGenerating) {
                         FilledIconButton(
-                            onClick = onCancel,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onCancel()
+                            },
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = Color(0xFFEF4444),
                                 contentColor = Color.White
                             ),
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("stop_generating_button")
                         ) {
                             Icon(
                                 Icons.Default.Stop,
@@ -732,7 +737,12 @@ fun MessageInput(
                                 modifier = Modifier.size(20.dp)
                             )
                         }
-                    } else {
+                    }
+
+                    if (!isGenerating || text.isNotBlank() || selectedImageUri != null) {
+                        if (isGenerating) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         FilledIconButton(
                             onClick = {
                                 if (isListening) {

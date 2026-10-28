@@ -98,7 +98,9 @@ sealed class InboundMessage {
         val workspace: String = "",
         val workspacePath: String = "",
         val interactive: Boolean = true,
-        val nonInteractiveReason: String = ""
+        val nonInteractiveReason: String = "",
+        val generating: Boolean? = null,
+        val status: String = ""
     ) : InboundMessage()
 
     data class Step(
@@ -107,7 +109,13 @@ sealed class InboundMessage {
         val agentId: String? = null
     ) : InboundMessage()
 
-    data class StepBatch(val steps: List<Step> = emptyList(), val agentId: String? = null, val conversationId: String? = null) : InboundMessage()
+    data class StepBatch(
+        val steps: List<Step> = emptyList(),
+        val agentId: String? = null,
+        val conversationId: String? = null,
+        val generating: Boolean? = null,
+        val status: String = ""
+    ) : InboundMessage()
 
     data class Generating(val conversationId: String = "", val agentId: String? = null) : InboundMessage()
     data class ResponseComplete(val conversationId: String = "", val agentId: String? = null) : InboundMessage()
@@ -186,7 +194,13 @@ sealed class OutboundMessage {
     ) : OutboundMessage()
     data class Hello(val pubkey: String, val type: String = "HELLO", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class NewConversation(val type: String = "NEW_CONVERSATION", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
-    data class CancelResponse(val type: String = "CANCEL_RESPONSE", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
+    data class CancelResponse(
+        val conversationId: String? = null,
+        val source: String = "",
+        val type: String = "CANCEL_RESPONSE",
+        override val id: String? = null,
+        override val agentId: String? = null
+    ) : OutboundMessage()
     data class AcceptEdits(val type: String = "ACCEPT_EDITS", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class RejectEdits(val type: String = "REJECT_EDITS", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
     data class ChangeModel(val type: String = "CHANGE_MODEL", override val id: String? = null, override val agentId: String? = null) : OutboundMessage()
